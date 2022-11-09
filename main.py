@@ -4,11 +4,6 @@ import matplotlib
 import backtesting
 import talib
 
-#* Balls
-#! Shit balls!
-#? Balls?
-# TODO: oh balls
-
 def main():
     ...
 
