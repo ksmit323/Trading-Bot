@@ -1,7 +1,18 @@
+"""
+This is my implementation of a 1-hour daytrading strategy.
+The primary idea is to buy on the break of an inside candle
+on tickers that are up on the day.
+
+IMPORTANT NOTE: This strategy is not capable of executing any
+trades withint the first 1.5 hours of the trading day because
+the strategy requires at least three bars of information
+"""
+
 import threading
 import time
+import sys
 
-import bt # another backtesting library; got the documentation bookmarked
+import bt  # another backtesting library; got the documentation bookmarked
 import backtesting
 import matplotlib
 import numpy
@@ -16,93 +27,123 @@ from ib_insync import *
 ib = IB()
 ib.connect('127.0.0.1', 7497, 2)
 
+# Initialize variable to check for every new hour
+global hour
+hour = 23
+
 
 def main():
 
-    # First, establish the time of day to get the correct volume value
-    time = time.localtime() #* Note that it is set to local time here in Vietnam
-    if time.tm_hour < 23:
-        volume = 100000 #if morning trading, the volume requirement is lower
+    # Establish the time of day
+    time_of_day = time.localtime()  # * NOTE: this is set to local time here in Vietnam
+
+    # Trading cannot start until after the first 1.5 hours of the day
+    if time_of_day.tm_hour >= 23:
+
+        # TODO: Fix this issue 
+        # Update all stop losses at the top of every hour
+        if hour != time_of_day.tm_hour:
+            ib.sleep(10)
+            adjust_all_stop_losses()
+            hour = time_of_day.tm_hour
+
+        # Close all positions at the end of the day
+        if time_of_day.tm_hour == 3 and time_of_day.tm_min > 55:  # * NOTE: this will not work when the market closes early
+            while True:
+                close_all_positions()
+                ib.sleep(10)
+                if len(ib.positions()) == 0:
+                    ib.disconnect()
+                    sys.exit("You have been disconnected")
+
+        # Initialize minimum volume requirement for scanner
+        volume = 500000
+
+        # Store scanner results as a variable so list doesn't change while iterating
+        scan_results = scanner(volume)
+
+        # Loop thru each ticker in the scanner results
+        for ticker in scan_results:
+
+            # Create a contract
+            contract = Stock(ticker, "SMART", "USD")
+
+            # Use qualify contracts function to automatically fill in additional info
+            ib.qualifyContracts(contract)
+
+            # Request live updates for historical bars
+            bars = get_data(contract)
+
+            # Tell ib_insync library to call the on_bar_update function when new data is received
+            # Set callback function for bar data
+            bars.updateEvent += on_bar_update
+
+            # Build dataframe from bars data list
+            df = util.df(bars)
+
+            # Must be an inside bar
+            if df.low.iloc[-2] >= df.low.iloc[-3] and df.high.iloc[-2] <= df.high.iloc[-3]:
+
+                # Inside bar must be green
+                if df.close.iloc[-2] >= df.open.iloc[-2]:
+
+                    # Place order when new hourly high is made
+                    if df.high.iloc[-1] >= df.high.iloc[-2]:
+                        limit_price = df.high.iloc[-2] + 0.05
+                        stop_loss = df.low.iloc[-2] - 0.01
+                        risk_per_share = limit_price - stop_loss
+                        quantity = share_size(risk_per_share)
+
+                        # Profit levels based on risk per share
+                        take_profit_1 = df.high.iloc[-2] + risk_per_share
+                        take_profit_2 = df.high.iloc[-2] + risk_per_share * 2
+                        take_profit_3 = df.high.iloc[-2] + risk_per_share * 4
+
+                        # Spread orders out to vary profit taking prices
+                        place_order(contract, "BUY", quantity/3, limit_price, take_profit_1, stop_loss)
+                        place_order(contract, "BUY", quantity/3, limit_price, take_profit_2, stop_loss)
+                        place_order(contract, "BUY", quantity/3, limit_price, take_profit_3, stop_loss)
+
+    # TODO: I would like to have a watchlist type of implementation so the same inside bars
+    # TODO: are not getting tested over and over again even though they have already been verified
+    # TODO: So at that point, only tickers in the watchlist would be eligible for a trade 
+
     else:
-        volume = 500000 #if afternoon trading, the volume requirement is higher
-    
-    # Close all positions at the end of the day
-    if time.tm_hour == 3 and time.tm_sec > 55:
-        close_all_positions()
-
-    # Create a contract
-    contract("TSLA")
-
-    # Use qualify contracts function to automatically fill in additional info
-    ib.qualifyContracts(contract)
-
-    # Request live updates for historical bars
-    bars = ib.reqHistoricalData(
-        contract,
-        endDateTime="",
-        durationStr="1 D",
-        barSizeSetting="60 mins",
-        whatToShow="MIDPOINT",
-        useRTH=True,
-        formatDate=1,
-        keepUpToDate=True)
-
-    # Tell ib_insync library to call the on_bar_update function when new data is received
-    # Set callback function for bar data
-    bars.updateEvent += on_bar_update
+        ib.disconnect
+        sys.exit("Too early to trade")
 
     # Sleep interval
-    ib.sleep(10)
+    ib.sleep(2)
 
     # Run infinitely
     ib.run()
 
 
-def contract(ticker: str):
-    """ Create a contract with a ticker argument """
-    contract = Stock(ticker, "SMART", "USD")
-    return contract
-
-
 def place_order(contract, direction, qty, lp, tp, sl):
     """ Place bracket order with IB """
-    bracket_order = ib.bracketOrder(
-        direction,
-        qty,
-        limit_price=lp,
-        take_profit_price=tp,
-        stop_loss_price=sl,
-    )
-
+    bracket_order = ib.bracketOrder(direction, qty, lp, tp, sl)
     for ord in bracket_order:
         ib.placeOrder(contract, ord)
-    
     print("An order has been placed. See TWS for details")
 
+
 def on_bar_update(bars: BarDataList, has_new_bar: bool):
-    """ 
-    This function defines the entire trading protocol and
-    when the Tradig Bot executres trades.
-    The Trading Protocol is as follows:
-    - The last fully formed 1hr bar must be an inside candle
-      to it's predecessor
-    - The last fully formed 1hr bar must be green
-    - The current bar must make a new high over the inside bar for
-      a trade to execute (the entry)
-    """
-    # Begin an execution sequence at the top of every hour
-    if has_new_bar:
-        # Sleep so dataframe has time to update to the last bar
-        ib.sleep(10)
-        # Build dataframe from bars data list
-        df = util.df(bars)
+    """ Callback function to update on every new bar """
 
 
+def get_data(contract):
+    " Function will return historical data with live updates"
+    bars = ib.reqHistoricalData(
+        contract,
+        endDateTime="",
+        durationStr="1 D",
+        barSizeSetting="1 hour",
+        whatToShow="MIDPOINT",
+        useRTH=True,
+        formatDate=1,
+        keepUpToDate=True)
 
-        
-
-
-
+    return bars
 
 
 def scanner(volume):
@@ -118,13 +159,13 @@ def scanner(volume):
         instrument="STK",
         locationCode="STK.US.MAJOR",
         scanCode="TOP_PERC_GAIN")
-    
+
     # Set scanner criteria with the appropriate tag values
     tag_values = [
         TagValue("changePercAbove", "0"),
         TagValue("priceBelow", 40),
         TagValue("volumeAbove", volume)]
-    
+
     # The tag_values are given as 3rd argument; the 2nd argument must always be an empty list
     # (IB has not documented the 2nd argument and it's not clear what it does)
     scan_data = ib.reqScannerData(sub, [], tag_values)
@@ -138,14 +179,47 @@ def scanner(volume):
 def close_all_positions():
     """ Close all positions in account """
 
-    # Create a list of all positions
+    # Cancel all existing orders first
+    for order in ib.openOrders:
+        ib.cancelOrder(order)
+
+    # Market order out of all positions
     positions = ib.positions()
-    # Loop thru each position and close it
     for position in positions:
         contract = position.contract
         quantity = abs(position.position)
         order = MarketOrder(action="SELL", totalQuantity=quantity)
-        ib.placeOrder(contract, order)  
+        ib.placeOrder(contract, order)
+
+
+def share_size(risk_per_share):
+    """ 
+    Function will determine the correct position sizing
+    based on risk amount, account size and risk per share
+    """
+    account_size = 37000
+    risk_percent = 0.02
+    shares = (account_size * risk_percent) / risk_per_share
+    return shares
+
+
+def adjust_all_stop_losses():
+    """ Function will update all stop losses """
+
+    for trade in ib.openTrades():
+        if trade.order.orderType == "STP":
+
+            # Create new contract based on the symbol
+            contract = Stock(trade.contract.symbol, "SMART", "USD")
+
+            # Make sure the bars data is up to date
+            bars = get_data(contract)
+            bars.updateEvent += on_bar_update
+            df = util.df(get_data(contract))
+
+            # Replace previous stop order with new price
+            trade.order.auxPrice = df.low.iloc[-2]
+            ib.placeOrder(contract, trade.order)
 
 
 def commissions_paid():
@@ -174,7 +248,7 @@ def scanner_parameters():
 
     # View all scanner parameters in a web browser
     path = "scanner_parameters.xml"
-    with open(path,"w") as f:
+    with open(path, "w") as f:
         f.write(xml)
     webbrowser.open(path)
 
@@ -209,3 +283,4 @@ def scan_codes():
 
 if __name__ == '__main__':
     main()
+
