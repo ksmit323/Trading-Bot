@@ -3,6 +3,14 @@ This is my implementation of a 1-hour daytrading strategy.
 The primary idea is to buy on the break of an inside candle
 on tickers that are up on the day.
 
+The Trading Protocol is as follows:
+- The last fully formed 1hr bar must be an inside candle
+    to it's predecessor
+- The last fully formed 1hr bar must be green
+- The current bar must make a new high over the inside bar for
+    a trade to execute (the entry)
+- On every new 1hr candle update the stop loss to the low of the previous candle
+
 IMPORTANT NOTE: This strategy is not capable of executing any
 trades within the first 1.5 hours of the trading day because
 the strategy requires at least three bars of information
@@ -38,78 +46,96 @@ def main():
     # Trading cannot start until after the first 1.5 hours of the day
     if time_of_day.tm_hour >= 12:   #! Change this back to 23
 
-        #! TODO: Fix this issue 
-        # Update all stop losses every hour
-        if time_of_day.tm_min == 0:
-            ib.sleep(10)
-            adjust_all_stop_losses()
-
-        # Close all positions at the end of the day
-        if time_of_day.tm_hour == 3 and time_of_day.tm_min > 55:  # * NOTE: this will not work when the market closes early
-            while True:
-                close_all_positions()
-                ib.sleep(10)
-                if len(ib.positions()) == 0:
-                    print(commissions_paid())
-                    ib.disconnect()
-                    sys.exit("You have been disconnected")
+        # Initialize hour variable to help track time of day
+        hour = 22
 
         # Initialize minimum volume requirement for scanner
-        volume = 750000 #! Adjust as needed
+        #* Adjust as needed
+        volume = 750000 
 
-        # Store scanner results as a variable so list doesn't change while iterating
-        scan_results = scanner(volume)
+        while True:
 
-        # Initialize empty watchlist variable
-        watchlist = []
-        
-        # Loop thru each ticker in the scanner results and add to watchlist
-        for ticker in scan_results:
+            # Update all stop losses every hour
+            if hour != time_of_day.tm_hour:
+                ib.sleep(10)
+                adjust_all_stop_losses()
 
-            # Create a contract
-            contract = Stock(ticker, "SMART", "USD")
+            # Close all positions at the end of the day
+            #* NOTE: this will not work when the market closes early
+            if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:  
+                while True:
+                    close_all_positions()
+                    ib.sleep(10)
+                    if len(ib.positions()) == 0:
+                        print(f"Your total commissions for today are {commissions_paid()}")
+                        ib.disconnect()
+                        sys.exit("You have been disconnected")
 
-            # Create a dataframe of 1 hour bars
-            df = build_dataframe(contract)
+            # Loop thru each ticker in the scanner results and add to watchlist
+            #* This loop should only run once per hour hence the hour updated variable
+            if hour != time_of_day.tm_hour:
 
-            # Append ticker to watchlist if requirements met
-            try:
-                if check_strategy(df):
-                    watchlist.append(ticker)
-            except AttributeError:
-                continue
+                # Store scanner results as a variable so list doesn't change while iterating
+                scan_results = scanner(volume)
 
-        # Loop thru watchlist and check for any orders to be placed
-        for ticker in watchlist:
+                # Initialize empty watchlist variable
+                watchlist = []
 
-            # Create a contract
-            contract = Stock(ticker, "SMART", "USD")
+                for ticker in scan_results:
 
-            # Create a dataframe of 1 hour bars
-            df = build_dataframe(contract)
+                    # Create a contract
+                    contract = Stock(ticker, "SMART", "USD")
 
-            # Place order when new hourly high is made
-            if df.high.iloc[-1] >= df.high.iloc[-2]:
-                limit_price = round((df.high.iloc[-2] + 0.05), 2)
-                stop_loss = round((df.low.iloc[-2] - 0.01), 2)
-                risk_per_share = round((limit_price - stop_loss), 2)
-                quantity = share_size(risk_per_share)
+                    # Create a dataframe of 1 hour bars
+                    df = build_dataframe(contract)
 
-                # Profit levels based on risk per share
-                take_profit_1 = round((df.high.iloc[-2] + risk_per_share), 2)
-                take_profit_2 = round((df.high.iloc[-2] + risk_per_share * 2), 2)
-                take_profit_3 = round((df.high.iloc[-2] + risk_per_share * 4), 2)
+                    # Append ticker to watchlist if requirements met
+                    try:
+                        if check_strategy(df):
+                            watchlist.append(ticker)
+                    except AttributeError:
+                        continue
+                    
+                    # Update hour to prevent loop from running again
+                    hour = time_of_day.tm_hour
+            
+            # Build a ticker list with open trades
+            tickers_with_open_trades = open_trades_ticker_set()
 
-                # Spread orders out to vary profit taking prices
-                place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_1, stop_loss)
-                place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_2, stop_loss)
-                place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_3, stop_loss)
+            # Loop thru watchlist and check for any orders to be placed
+            for ticker in watchlist:
 
-                # Confirm order placement with print statement
-                print(f"An order has been placed for {ticker}. See TWS for details")
-        
-        # Sleep interval to allow for updates
-        ib.sleep(10)
+                # Create a contract
+                contract = Stock(ticker, "SMART", "USD")
+
+                # Create a dataframe of 1 hour bars
+                df = build_dataframe(contract)
+
+                # Check that order hasn't already been placed
+                if ticker not in tickers_with_open_trades:
+
+                    # Place order when new hourly high is made
+                    if df.high.iloc[-1] >= df.high.iloc[-2]:
+                        limit_price = round((df.high.iloc[-2] + 0.05), 2)
+                        stop_loss = round((df.low.iloc[-2] - 0.01), 2)
+                        risk_per_share = round((limit_price - stop_loss), 2)
+                        quantity = share_size(risk_per_share)
+
+                        # Profit levels based on risk per share
+                        take_profit_1 = round((df.high.iloc[-2] + risk_per_share), 2)
+                        take_profit_2 = round((df.high.iloc[-2] + risk_per_share * 2), 2)
+                        take_profit_3 = round((df.high.iloc[-2] + risk_per_share * 4), 2)
+
+                        # Spread orders out to vary profit taking prices
+                        place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_1, stop_loss)
+                        place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_2, stop_loss)
+                        place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_3, stop_loss)
+
+                        # Confirm order placement with print statement
+                        print(f"An order has been placed for {ticker}. See TWS for details")
+            
+            # Sleep interval to allow for updates
+            ib.sleep(10)
 
     else:
         ib.disconnect
@@ -148,6 +174,7 @@ def check_strategy(df):
 
     # Prior bar must be an inside bar
     if df.low.iloc[-2] >= df.low.iloc[-3] and df.high.iloc[-2] <= df.high.iloc[-3]:
+
         # That inside bar must be green
         if df.close.iloc[-2] >= df.open.iloc[-2]:
             return True
@@ -274,6 +301,19 @@ def adjust_all_stop_losses():
             ib.placeOrder(contract, trade.order)
 
 
+def open_trades_ticker_set():
+    """ Returns a set of tickers with open trades """
+
+    ticker_set = set()
+
+    for trade in ib.openTrades():
+        ticker_set.add(trade.contract.symbol)
+
+    print(ticker_set)
+    
+    return ticker_set
+
+
 def commissions_paid():
     """ Return the total cost of commissions in USD """
     commissions = sum(fill.commissionReport.commission for fill in ib.fills())
@@ -335,3 +375,4 @@ def scan_codes():
 
 if __name__ == '__main__':
     main()
+
