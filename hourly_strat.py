@@ -40,70 +40,52 @@ def main():
 
     # TODO: Really need to adjust the scanners better
 
+    # TODO: Need to calculate risk/reward based on the profit taking currently implemented
+
     # Establish the time of day
     time_of_day = time.localtime()  # * NOTE: this is set to local time here in Vietnam
 
-    # Trading cannot start until after the first 1.5 hours of the day
-    if time_of_day.tm_hour >= 12:   #! Change this back to 23
+    # Initialize hour variable to help track time of day
+    hour = 22
 
-        # Initialize hour variable to help track time of day
-        hour = 22
+    # Initialize minimum volume requirement for scanner
+    # * Adjust as needed
+    volume = 500000
 
-        # Initialize minimum volume requirement for scanner
-        #* Adjust as needed
-        volume = 750000 
+    while True:
 
-        while True:
-
-            # Update all stop losses every hour
-            if hour != time_of_day.tm_hour:
+        # Update all stop losses every hour
+        if hour != time_of_day.tm_hour:
+            if len(ib.positions()) > 0:
                 ib.sleep(10)
-                adjust_all_stop_losses()
+                try:
+                    adjust_all_stop_losses()
+                except AttributeError:
+                    pass
 
-            # Close all positions at the end of the day
-            #* NOTE: this will not work when the market closes early
-            if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:  
-                while True:
-                    close_all_positions()
-                    ib.sleep(10)
-                    if len(ib.positions()) == 0:
-                        print(f"Your total commissions for today are {commissions_paid()}")
-                        ib.disconnect()
-                        sys.exit("You have been disconnected")
+        # Close all positions at the end of the day
+        # * NOTE: this will not work when the market closes early
+        if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:
+            while True:
+                close_all_positions()
+                ib.sleep(10)
+                if len(ib.positions()) == 0:
+                    print(
+                        f"Your total commissions for today are {commissions_paid()}")
+                    ib.disconnect()
+                    sys.exit("You have been disconnected")
 
-            # Loop thru each ticker in the scanner results and add to watchlist
-            #* This loop should only run once per hour hence the hour updated variable
-            if hour != time_of_day.tm_hour:
+        # Loop thru each ticker in the scanner results and add to watchlist
+        # * This loop should only run once per hour hence the hour updated variable
+        if hour != time_of_day.tm_hour:
 
-                # Store scanner results as a variable so list doesn't change while iterating
-                scan_results = scanner(volume)
+            # Initialize empty watchlist variable
+            watchlist = []
 
-                # Initialize empty watchlist variable
-                watchlist = []
+            # Store scanner results as a variable so list doesn't change while iterating
+            scan_results = scanner(volume)
 
-                for ticker in scan_results:
-
-                    # Create a contract
-                    contract = Stock(ticker, "SMART", "USD")
-
-                    # Create a dataframe of 1 hour bars
-                    df = build_dataframe(contract)
-
-                    # Append ticker to watchlist if requirements met
-                    try:
-                        if check_strategy(df):
-                            watchlist.append(ticker)
-                    except AttributeError:
-                        continue
-                    
-                    # Update hour to prevent loop from running again
-                    hour = time_of_day.tm_hour
-            
-            # Build a ticker list with open trades
-            tickers_with_open_trades = open_trades_ticker_set()
-
-            # Loop thru watchlist and check for any orders to be placed
-            for ticker in watchlist:
+            for ticker in scan_results:
 
                 # Create a contract
                 contract = Stock(ticker, "SMART", "USD")
@@ -111,43 +93,61 @@ def main():
                 # Create a dataframe of 1 hour bars
                 df = build_dataframe(contract)
 
-                # Check that order hasn't already been placed
-                if ticker not in tickers_with_open_trades:
+                # Append ticker to watchlist if it passes the strategy check
+                try:
+                    if check_strategy(df):
+                        watchlist.append(ticker)
+                except AttributeError:
+                    continue
 
-                    # Place order when new hourly high is made
-                    if df.high.iloc[-1] >= df.high.iloc[-2]:
-                        limit_price = round((df.high.iloc[-2] + 0.05), 2)
-                        stop_loss = round((df.low.iloc[-2] - 0.01), 2)
-                        risk_per_share = round((limit_price - stop_loss), 2)
-                        quantity = share_size(risk_per_share)
+                # Update hour variable to prevent loop from running again
+                hour = time_of_day.tm_hour
 
-                        # Profit levels based on risk per share
-                        take_profit_1 = round((df.high.iloc[-2] + risk_per_share), 2)
-                        take_profit_2 = round((df.high.iloc[-2] + risk_per_share * 2), 2)
-                        take_profit_3 = round((df.high.iloc[-2] + risk_per_share * 4), 2)
+        # Build a ticker list with open trades
+        tickers_with_open_trades = open_trades_ticker_set()
 
-                        # Spread orders out to vary profit taking prices
-                        place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_1, stop_loss)
-                        place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_2, stop_loss)
-                        place_order(contract, "BUY", round(quantity/3), limit_price, take_profit_3, stop_loss)
+        # Loop thru watchlist and check for any orders to be placed
+        for ticker in watchlist:
 
-                        # Confirm order placement with print statement
-                        print(f"An order has been placed for {ticker}. See TWS for details")
-            
-            # Sleep interval to allow for updates
-            ib.sleep(10)
+            # Create a contract
+            contract = Stock(ticker, "SMART", "USD")
 
-    else:
-        ib.disconnect
-        sys.exit("Too early to trade")
+            # Create a dataframe of 1 hour bars
+            df = build_dataframe(contract)
 
-    # Sleep interval
-    ib.sleep(2)
+            # Check that order hasn't already been placed
+            if ticker not in tickers_with_open_trades:
 
-    # Run infinitely
-    #ib.run()
-    ib.disconnect()
-    print("You have been disconnected")
+                # Place order when new hourly high is made
+                if df.high.iloc[-1] >= df.high.iloc[-2]:
+                    limit_price = round((df.high.iloc[-2] + 0.05), 2)
+                    stop_loss = round((df.low.iloc[-2] - 0.01), 2)
+                    risk_per_share = round((limit_price - stop_loss), 2)
+                    quantity = share_size(risk_per_share)
+
+                    # Profit levels based on risk per share
+                    take_profit_1 = round(
+                        (df.high.iloc[-2] + risk_per_share), 2)
+                    take_profit_2 = round(
+                        (df.high.iloc[-2] + risk_per_share * 2), 2)
+                    take_profit_3 = round(
+                        (df.high.iloc[-2] + risk_per_share * 4), 2)
+
+                    # Spread orders out to vary profit taking prices
+                    place_order(contract, "BUY", round(quantity/3),
+                                limit_price, take_profit_1, stop_loss)
+                    place_order(contract, "BUY", round(quantity/3),
+                                limit_price, take_profit_2, stop_loss)
+                    place_order(contract, "BUY", round(quantity/3),
+                                limit_price, take_profit_3, stop_loss)
+
+                    # Confirm order placement with print statement
+                    print(f"An order has been placed for {ticker}. See TWS for details")
+
+        print("Finished iterating over the watchlist")
+        
+        # Sleep interval to allow for updates
+        ib.sleep(10)
 
 
 def build_dataframe(contract):
@@ -157,7 +157,7 @@ def build_dataframe(contract):
     ib.qualifyContracts(contract)
 
     # Request live updates for historical bars
-    bars = get_data(contract)
+    bars = get_hist_data(contract)
 
     # Tell ib_insync library to call the on_bar_update function when new data is received
     # Set callback function for bar data
@@ -178,10 +178,8 @@ def check_strategy(df):
         # That inside bar must be green
         if df.close.iloc[-2] >= df.open.iloc[-2]:
             return True
-        else:
-            return False
-    else:
-        return False
+
+    return False
 
 
 def on_bar_update(bars: BarDataList, has_new_bar: bool):
@@ -196,7 +194,7 @@ def place_order(contract, direction, qty, lp, tp, sl):
         ib.placeOrder(contract, ord)
 
 
-def get_data(contract):
+def get_hist_data(contract):
     """ Return historical data with live updates """
 
     bars = ib.reqHistoricalData(
@@ -220,20 +218,29 @@ def scanner(volume):
     There are two scan subscriptions being made because IB only returns
     a maximum of 50 tickers per subscription.  Subs are divided by stock price.
     """
+    # * Experiment with NASDAQ.SCM, volume, prices
+    # * Try two subs with NASDAQ and NYSE
 
     # Create a ScannerSubscription to submit to the reqScannerData method
-    sub = ScannerSubscription(
+    sub_1 = ScannerSubscription(
         instrument="STK",
-        locationCode="STK.US.MAJOR",    #* Need to find a way to filter out AMEX stocks
-        scanCode="TOP_OPEN_PERC_GAIN")  
+        locationCode="STK.NASDAQ.SCM",  # * Need to find a way to filter out AMEX stocks
+        scanCode="TOP_PERC_GAIN")
+
+    # sub_2 = ScannerSubscription(
+    #    instrument="STK",
+    #    locationCode="STK.NYSE",  # * Need to find a way to filter out AMEX stocks
+    #    scanCode="TOP_OPEN_PERC_GAIN")
 
     # Set scanner criteria with the appropriate tag values
     tag_values_1 = [
-        TagValue("changePercAbove", "2"),   #* Still want to find a real ATR type of tag
+        # * Still want to find a real ATR type of tag
+        TagValue("changePercAbove", 2),
         TagValue("priceBelow", 40),
-        TagValue("priceAbove", 15),
+        TagValue("priceAbove", 0.20),
         TagValue("volumeAbove", volume),
         TagValue("priceRangeAbove", "0.1")]
+
     tag_values_2 = [
         TagValue("changePercAbove", "1"),
         TagValue("priceBelow", 15),
@@ -243,15 +250,16 @@ def scanner(volume):
 
     # The tag_values are given as 3rd argument; the 2nd argument must always be an empty list
     # (IB has not documented the 2nd argument and it's not clear what it does)
-    scan_data_1 = ib.reqScannerData(sub, [], tag_values_1)
-    scan_data_2 = ib.reqScannerData(sub, [], tag_values_2)
+    scan_data_1 = ib.reqScannerData(sub_1, [], tag_values_1)
+    #scan_data_2 = ib.reqScannerData(sub_2, [], tag_values_1)
 
     # Add tickers to a list and return that list
     symbols_1 = [sd.contractDetails.contract.symbol for sd in scan_data_1]
-    symbols_2 = [sd.contractDetails.contract.symbol for sd in scan_data_2]
-    symbols = symbols_1 + symbols_2
-    print(len(symbols))
-    return symbols
+    #symbols_2 = [sd.contractDetails.contract.symbol for sd in scan_data_2]
+    #symbols = symbols_1 + symbols_2
+    print(len(symbols_1))
+    # print(len(symbols_2))
+    return symbols_1
 
 
 def close_all_positions():
@@ -292,9 +300,9 @@ def adjust_all_stop_losses():
             contract = Stock(trade.contract.symbol, "SMART", "USD")
 
             # Make sure the bars data is up to date
-            bars = get_data(contract)
+            bars = get_hist_data(contract)
             bars.updateEvent += on_bar_update
-            df = util.df(get_data(contract))
+            df = util.df(get_hist_data(contract))
 
             # Replace previous stop order with new price
             trade.order.auxPrice = df.low.iloc[-2]
@@ -305,12 +313,8 @@ def open_trades_ticker_set():
     """ Returns a set of tickers with open trades """
 
     ticker_set = set()
-
     for trade in ib.openTrades():
         ticker_set.add(trade.contract.symbol)
-
-    print(ticker_set)
-    
     return ticker_set
 
 
@@ -318,11 +322,6 @@ def commissions_paid():
     """ Return the total cost of commissions in USD """
     commissions = sum(fill.commissionReport.commission for fill in ib.fills())
     return commissions
-
-
-def positions():
-    """ Returns a list of all positions in the account"""
-    return ib.positions()
 
 
 def scanner_parameters():
@@ -349,8 +348,10 @@ def scanner_parameters():
 
     # Find all tags available for filtering
     tags = [elem.text for elem in tree.findall(".//AbstractField/code")]
-    print(len(tags), "Tags:")
-    print(tags)
+    sorted_tags = sorted(tags)
+    tags_set = set(sorted_tags)
+    df = pd.DataFrame(data={"col1": tags_set})
+    df.to_csv("./file.csv", sep=',', index=False)
 
 
 def scan_codes():
@@ -375,4 +376,3 @@ def scan_codes():
 
 if __name__ == '__main__':
     main()
-
