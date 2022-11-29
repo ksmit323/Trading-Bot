@@ -23,7 +23,7 @@ import sys
 import bt  # another backtesting library; got the documentation bookmarked
 import backtesting
 import matplotlib
-import numpy
+import numpy as np
 import pandas as pd
 import talib
 import webbrowser
@@ -38,19 +38,15 @@ ib.connect('127.0.0.1', 7497, 2)
 
 def main():
 
-    # TODO: Really need to adjust the scanners better
-
     # TODO: Need to calculate risk/reward based on the profit taking currently implemented
+
+    # TODO: Test cancel orders and close positions functions
 
     # Establish the time of day
     time_of_day = time.localtime()  # * NOTE: this is set to local time here in Vietnam
 
     # Initialize hour variable to help track time of day
     hour = 22
-
-    # Initialize minimum volume requirement for scanner
-    # * Adjust as needed
-    volume = 500000
 
     while True:
 
@@ -65,13 +61,13 @@ def main():
 
         # Close all positions at the end of the day
         # * NOTE: this will not work when the market closes early
-        if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:
+        if time_of_day.tm_hour == 3 and time_of_day.tm_min == 55:
             while True:
+                cancel_all_open_orders()
                 close_all_positions()
                 ib.sleep(10)
                 if len(ib.positions()) == 0:
-                    print(
-                        f"Your total commissions for today are {commissions_paid()}")
+                    print(f"Today's total commissions: ${commissions_paid()}")
                     ib.disconnect()
                     sys.exit("You have been disconnected")
 
@@ -83,7 +79,7 @@ def main():
             watchlist = []
 
             # Store scanner results as a variable so list doesn't change while iterating
-            scan_results = scanner(volume)
+            scan_results = scanner()
 
             for ticker in scan_results:
 
@@ -106,7 +102,7 @@ def main():
         # Build a ticker list with open trades
         tickers_with_open_trades = open_trades_ticker_set()
 
-        # Loop thru watchlist and check for any orders to be placed
+        # Loop thru watchlist and check for any orders to be placed     
         for ticker in watchlist:
 
             # Create a contract
@@ -115,23 +111,23 @@ def main():
             # Create a dataframe of 1 hour bars
             df = build_dataframe(contract)
 
-            # Check that order hasn't already been placed
+            # Check that order hasn't already been placed           #! May need to consider how to adjust this so more than one trade can be made on the same ticker
             if ticker not in tickers_with_open_trades:
 
-                # Place order when new hourly high is made
-                if df.high.iloc[-1] >= df.high.iloc[-2]:
-                    limit_price = round((df.high.iloc[-2] + 0.05), 2)
+                # Place order when new hourly high is made if a new low hasn't been made first
+                if df.high.iloc[-1] >= df.high.iloc[-2] and df.low.iloc[-1] >= df.low.iloc[-2]:
+                    limit_price = round((df.high.iloc[-2] + 0.01), 2)
                     stop_loss = round((df.low.iloc[-2] - 0.01), 2)
                     risk_per_share = round((limit_price - stop_loss), 2)
                     quantity = share_size(risk_per_share)
 
-                    # Profit levels based on risk per share
+                    # Profit levels based on risk per share            
                     take_profit_1 = round(
-                        (df.high.iloc[-2] + risk_per_share), 2)
+                        (df.high.iloc[-2] + risk_per_share * 1.5), 2)
                     take_profit_2 = round(
-                        (df.high.iloc[-2] + risk_per_share * 2), 2)
+                        (df.high.iloc[-2] + risk_per_share * 3), 2)
                     take_profit_3 = round(
-                        (df.high.iloc[-2] + risk_per_share * 4), 2)
+                        (df.high.iloc[-2] + risk_per_share * 6), 2)
 
                     # Spread orders out to vary profit taking prices
                     place_order(contract, "BUY", round(quantity/3),
@@ -202,7 +198,7 @@ def get_hist_data(contract):
         endDateTime="",
         durationStr="1 D",
         barSizeSetting="1 hour",
-        whatToShow="MIDPOINT",
+        whatToShow="TRADES",
         useRTH=True,
         formatDate=1,
         keepUpToDate=True)
@@ -210,7 +206,7 @@ def get_hist_data(contract):
     return bars
 
 
-def scanner(volume):
+def scanner():
     """ 
     Returns a list of tickers to be used for potential trades 
     Pass on a volume argument.  Ideally, you
@@ -218,68 +214,78 @@ def scanner(volume):
     There are two scan subscriptions being made because IB only returns
     a maximum of 50 tickers per subscription.  Subs are divided by stock price.
     """
-    # * Experiment with NASDAQ.SCM, volume, prices
-    # * Try two subs with NASDAQ and NYSE
+
+    # Initialize minimum volume requirement for scanner. Adjust as needed
+    volume_higher_priced = 300_000
+    volume_lower_priced = 500_000
 
     # Create a ScannerSubscription to submit to the reqScannerData method
+    #* Currently only trading on the NASDAQ to avoid AMEX and overtrading           
     sub_1 = ScannerSubscription(
         instrument="STK",
-        locationCode="STK.NASDAQ.SCM",  # * Need to find a way to filter out AMEX stocks
-        scanCode="TOP_PERC_GAIN")
+        locationCode="STK.NASDAQ", 
+        scanCode="TOP_OPEN_PERC_GAIN")
 
     # sub_2 = ScannerSubscription(
     #    instrument="STK",
-    #    locationCode="STK.NYSE",  # * Need to find a way to filter out AMEX stocks
+    #    locationCode="STK.NYSE",  
     #    scanCode="TOP_OPEN_PERC_GAIN")
 
     # Set scanner criteria with the appropriate tag values
     tag_values_1 = [
         # * Still want to find a real ATR type of tag
-        TagValue("changePercAbove", 2),
+        TagValue("changePercAbove", 3),
         TagValue("priceBelow", 40),
-        TagValue("priceAbove", 0.20),
-        TagValue("volumeAbove", volume),
-        TagValue("priceRangeAbove", "0.1")]
+        TagValue("priceAbove", 10),
+        TagValue("usdVolumeAbove", volume_higher_priced),
+        TagValue("priceRangeAbove", "0.75")]
 
     tag_values_2 = [
-        TagValue("changePercAbove", "1"),
-        TagValue("priceBelow", 15),
-        TagValue("priceAbove", 0.5),
-        TagValue("volumeAbove", volume),
-        TagValue("priceRangeAbove", "1")]
+        TagValue("changePercAbove", "4"),
+        TagValue("priceBelow", 10),
+        TagValue("priceAbove", 0.3),
+        TagValue("usdVolumeAbove", volume_lower_priced),      
+        TagValue("priceRangeAbove", "0.1")]
 
     # The tag_values are given as 3rd argument; the 2nd argument must always be an empty list
     # (IB has not documented the 2nd argument and it's not clear what it does)
     scan_data_1 = ib.reqScannerData(sub_1, [], tag_values_1)
-    #scan_data_2 = ib.reqScannerData(sub_2, [], tag_values_1)
+    scan_data_2 = ib.reqScannerData(sub_1, [], tag_values_2)
 
     # Add tickers to a list and return that list
     symbols_1 = [sd.contractDetails.contract.symbol for sd in scan_data_1]
-    #symbols_2 = [sd.contractDetails.contract.symbol for sd in scan_data_2]
-    #symbols = symbols_1 + symbols_2
+    symbols_2 = [sd.contractDetails.contract.symbol for sd in scan_data_2]
+    symbols = symbols_1 + symbols_2
     print(len(symbols_1))
-    # print(len(symbols_2))
-    return symbols_1
+    print(len(symbols_2))
+    return symbols
+
+
+def cancel_all_open_orders():
+    """ This function cancels all open orders """
+
+    while len(ib.openOrders()) > 0:  
+        for order in ib.openOrders():
+            ib.cancelOrder(order)
+        ib.sleep(1)
+    print("All orders have been cancelled")   
 
 
 def close_all_positions():
     """ Close all positions in account """
 
-    # Cancel all existing orders first
-    for order in ib.openOrders:
-        ib.cancelOrder(order)
-
-    # Market order out of all positions
+    # Market order out of all positions                
     positions = ib.positions()
     for position in positions:
-        contract = position.contract
+        contract = Stock(position.contract.symbol, "SMART", "USD")
+        ib.qualifyContracts(contract)
         quantity = abs(position.position)
         order = MarketOrder(action="SELL", totalQuantity=quantity)
         ib.placeOrder(contract, order)
         ib.sleep(1)
 
 
-def share_size(risk_per_share):
+def share_size(risk_per_share):                               
     """ 
     Function will determine the correct position sizing
     based on risk amount, account size and risk per share
@@ -321,7 +327,7 @@ def open_trades_ticker_set():
 def commissions_paid():
     """ Return the total cost of commissions in USD """
     commissions = sum(fill.commissionReport.commission for fill in ib.fills())
-    return commissions
+    return round(commissions)
 
 
 def scanner_parameters():
