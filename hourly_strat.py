@@ -6,7 +6,7 @@ on tickers that are up on the day.
 The Trading Protocol is as follows:
 - The last fully formed 1hr bar must be an inside candle
     to it's predecessor
-- The last fully formed 1hr bar must be green
+- That inside candle must be green
 - The current bar must make a new high over the inside bar for
     a trade to execute (the entry)
 - On every new 1hr candle update the stop loss to the low of the previous candle
@@ -40,13 +40,16 @@ def main():
 
     # TODO: Need to calculate risk/reward based on the profit taking currently implemented
 
-    # TODO: Test cancel orders and close positions functions
+    #! I think the primary issue right now is the bot trades too much
 
     # Establish the time of day
     time_of_day = time.localtime()  # * NOTE: this is set to local time here in Vietnam
 
     # Initialize hour variable to help track time of day
     hour = 22
+
+    # Variable to track how many order have been placed per ticker in a trading day
+    orders_placed = 0
 
     while True:
 
@@ -61,25 +64,31 @@ def main():
 
         # Close all positions at the end of the day
         # * NOTE: this will not work when the market closes early
-        if time_of_day.tm_hour == 3 and time_of_day.tm_min == 55:
+        if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:
             while True:
                 cancel_all_open_orders()
+                print("Now closing all positions")
                 close_all_positions()
-                ib.sleep(10)
+                ib.sleep(20)
                 if len(ib.positions()) == 0:
+                    print("All positions have been closed")
                     print(f"Today's total commissions: ${commissions_paid()}")
+                    print(f"Total Orders Placed: {orders_placed}")
                     ib.disconnect()
                     sys.exit("You have been disconnected")
 
         # Loop thru each ticker in the scanner results and add to watchlist
-        # * This loop should only run once per hour hence the hour updated variable
+        # * This loop should only run once per hour hence the updated hour variable
         if hour != time_of_day.tm_hour:
 
             # Initialize empty watchlist variable
             watchlist = []
 
             # Store scanner results as a variable so list doesn't change while iterating
+            print("Scanning for tickers")
             scan_results = scanner()
+
+            print("Now adding tickers to watchlist")
 
             for ticker in scan_results:
 
@@ -99,31 +108,55 @@ def main():
                 # Update hour variable to prevent loop from running again
                 hour = time_of_day.tm_hour
 
+            print(f"{len(watchlist)} tickers have been added to the watchlist")
+            print(watchlist)
+
         # Build a ticker list with open trades
         tickers_with_open_trades = open_trades_ticker_set()
 
-        # Loop thru watchlist and check for any orders to be placed     
+        print("Starting iteration over watchlist")
+
+        # Loop thru watchlist and check for any orders to be placed
         for ticker in watchlist:
 
-            # Create a contract
-            contract = Stock(ticker, "SMART", "USD")
-
-            # Create a dataframe of 1 hour bars
-            df = build_dataframe(contract)
-
-            # Check that order hasn't already been placed           #! May need to consider how to adjust this so more than one trade can be made on the same ticker
+            # Check that order hasn't already been placed           #? May need to consider how to adjust this so more than one trade can be made on the same ticker
+            # ? Could be done with a dictionary with tm_hour as the key and a ticker list as the value]
             if ticker not in tickers_with_open_trades:
 
+                print(f"Checking ticker {ticker}")
+
+                # Create a contract
+                contract = Stock(ticker, "SMART", "USD")
+
+                # Create a dataframe of 1 hour bars
+                df = build_dataframe(contract)
+
+                # Remove ticker from watchlist if it makes a new low from previous candle
+                if df.low.iloc[-1] <= df.low.iloc[-2]:
+                    watchlist.remove(ticker)
+
                 # Place order when new hourly high is made if a new low hasn't been made first
-                if df.high.iloc[-1] >= df.high.iloc[-2] and df.low.iloc[-1] >= df.low.iloc[-2]:
-                    limit_price = round((df.high.iloc[-2] + 0.01), 2)
-                    stop_loss = round((df.low.iloc[-2] - 0.01), 2)
+                if df.high.iloc[-1] > df.high.iloc[-2] and df.low.iloc[-1] >= df.low.iloc[-2]:
+
+                    # Set the limit price. Higher stocks have higher limit ranges
+                    if df.open.iloc[-1] < 10:
+                        limit_price = round((df.high.iloc[-2] + 0.02), 2)
+                    else:
+                        limit_price = round((df.high.iloc[-2] + 0.04), 2)
+
+                    # Set the stop loss.  Higher priced stocks have higher stopo ut ranges
+                    if df.open.iloc[-1] < 5:
+                        stop_loss = round((df.low.iloc[-2] - 0.01), 2)
+                    else:
+                        stop_loss = round((df.low.iloc[-2] - 0.02), 2)
+
+                    # Set share size based on risk levels
                     risk_per_share = round((limit_price - stop_loss), 2)
                     quantity = share_size(risk_per_share)
 
-                    # Profit levels based on risk per share            
+                    # Profit levels based on risk per share
                     take_profit_1 = round(
-                        (df.high.iloc[-2] + risk_per_share * 1.5), 2)
+                        (df.high.iloc[-2] + risk_per_share * 1), 2)
                     take_profit_2 = round(
                         (df.high.iloc[-2] + risk_per_share * 3), 2)
                     take_profit_3 = round(
@@ -138,10 +171,12 @@ def main():
                                 limit_price, take_profit_3, stop_loss)
 
                     # Confirm order placement with print statement
-                    print(f"An order has been placed for {ticker}. See TWS for details")
+                    print(
+                        f"An order has been placed for {ticker}. See TWS for details")
+                    orders_placed += 1
 
         print("Finished iterating over the watchlist")
-        
+
         # Sleep interval to allow for updates
         ib.sleep(10)
 
@@ -169,6 +204,7 @@ def check_strategy(df):
     """ Will return True if strategic criteria is met """
 
     # Prior bar must be an inside bar
+    # ? May need to add criteria so that the third previous candle is green as well as the inside candle
     if df.low.iloc[-2] >= df.low.iloc[-3] and df.high.iloc[-2] <= df.high.iloc[-3]:
 
         # That inside bar must be green
@@ -220,32 +256,34 @@ def scanner():
     volume_lower_priced = 500_000
 
     # Create a ScannerSubscription to submit to the reqScannerData method
-    #* Currently only trading on the NASDAQ to avoid AMEX and overtrading           
+    # * Currently only trading on the NASDAQ to avoid AMEX and overtrading
     sub_1 = ScannerSubscription(
         instrument="STK",
-        locationCode="STK.NASDAQ", 
+        locationCode="STK.NASDAQ",
         scanCode="TOP_OPEN_PERC_GAIN")
 
     # sub_2 = ScannerSubscription(
     #    instrument="STK",
-    #    locationCode="STK.NYSE",  
+    #    locationCode="STK.NYSE",
     #    scanCode="TOP_OPEN_PERC_GAIN")
 
     # Set scanner criteria with the appropriate tag values
     tag_values_1 = [
         # * Still want to find a real ATR type of tag
-        TagValue("changePercAbove", 3),
+        TagValue("changePercAbove", 2),
         TagValue("priceBelow", 40),
         TagValue("priceAbove", 10),
-        TagValue("usdVolumeAbove", volume_higher_priced),
-        TagValue("priceRangeAbove", "0.75")]
+        TagValue("volumeAbove", volume_higher_priced),
+        TagValue("priceRangeAbove", "0.75"),
+        TagValue("volumeRateAbove", 0)]  # ! Will try out the volume rate tag and see if that can help reduce the number of trades taken and increase win rate
 
     tag_values_2 = [
         TagValue("changePercAbove", "4"),
         TagValue("priceBelow", 10),
         TagValue("priceAbove", 0.3),
-        TagValue("usdVolumeAbove", volume_lower_priced),      
-        TagValue("priceRangeAbove", "0.1")]
+        TagValue("volumeAbove", volume_lower_priced),
+        TagValue("priceRangeAbove", "0.1"),
+        TagValue("volumeRateAbove", 0)]
 
     # The tag_values are given as 3rd argument; the 2nd argument must always be an empty list
     # (IB has not documented the 2nd argument and it's not clear what it does)
@@ -256,25 +294,25 @@ def scanner():
     symbols_1 = [sd.contractDetails.contract.symbol for sd in scan_data_1]
     symbols_2 = [sd.contractDetails.contract.symbol for sd in scan_data_2]
     symbols = symbols_1 + symbols_2
-    print(len(symbols_1))
-    print(len(symbols_2))
+    print(len(symbols_1), "tickers found for higher priced stocks")
+    print(len(symbols_2), "tickers found for lower priced stocks")
     return symbols
 
 
 def cancel_all_open_orders():
     """ This function cancels all open orders """
 
-    while len(ib.openOrders()) > 0:  
+    while len(ib.openOrders()) > 0:
         for order in ib.openOrders():
             ib.cancelOrder(order)
         ib.sleep(1)
-    print("All orders have been cancelled")   
+    print("All orders have been cancelled")
 
 
 def close_all_positions():
     """ Close all positions in account """
 
-    # Market order out of all positions                
+    # Market order out of all positions
     positions = ib.positions()
     for position in positions:
         contract = Stock(position.contract.symbol, "SMART", "USD")
@@ -285,13 +323,13 @@ def close_all_positions():
         ib.sleep(1)
 
 
-def share_size(risk_per_share):                               
+def share_size(risk_per_share):
     """ 
     Function will determine the correct position sizing
     based on risk amount, account size and risk per share
     """
     account_size = 37000
-    risk_percent = 0.005
+    risk_percent = 0.01
     shares = round((account_size * risk_percent) / risk_per_share)
     return shares
 
@@ -326,13 +364,14 @@ def open_trades_ticker_set():
 
 def commissions_paid():
     """ Return the total cost of commissions in USD """
-    commissions = sum(fill.commissionReport.commission for fill in ib.fills())
+    commissions = sum(fill.commissionReport.commission for fill in ib.fills(
+    ))  # ? I think this is calculating for more than one day
     return round(commissions)
 
 
 def scanner_parameters():
     """
-    #! This function is not used in the actual trade execution.  
+    #* This function is not used in the actual trade execution.  
     It is only to find what scanner parameters are available for use.
     The code is here for reference only.
     Run this function in a separate script to find a list of scanner parameters
@@ -362,7 +401,7 @@ def scanner_parameters():
 
 def scan_codes():
     """
-    #! This function is not used in the actual trade execution.  
+    #* This function is not used in the actual trade execution.  
     Not used in the actual trade execution
     Print this function in a separate script
     to get all the different types of scan codes
