@@ -42,9 +42,6 @@ def main():
 
     #! I think the primary issue right now is the bot trades too much
 
-    # Establish the time of day
-    time_of_day = time.localtime()  # * NOTE: this is set to local time here in Vietnam
-
     # Initialize hour variable to help track time of day
     hour = 22
 
@@ -52,6 +49,10 @@ def main():
     orders_placed = 0
 
     while True:
+
+        # Establish the time of day
+        # * NOTE: this is set to local time here in Vietnam
+        time_of_day = time.localtime()  
 
         # Update all stop losses every hour
         if hour != time_of_day.tm_hour:
@@ -120,9 +121,8 @@ def main():
         for ticker in watchlist:
 
             # Check that order hasn't already been placed           #? May need to consider how to adjust this so more than one trade can be made on the same ticker
-            # ? Could be done with a dictionary with tm_hour as the key and a ticker list as the value]
-            if ticker not in tickers_with_open_trades:
-
+            if ticker not in tickers_with_open_trades:              #? Could be done with a dictionary with tm_hour as the key and a ticker list as the value]
+                                                                    #! Need to add code to cancel an outstanding buy order once the price has risen too much without the whole order being filled
                 print(f"Checking ticker {ticker}")
 
                 # Create a contract
@@ -132,14 +132,16 @@ def main():
                 df = build_dataframe(contract)
 
                 # Remove ticker from watchlist if it makes a new low from previous candle
-                if df.low.iloc[-1] <= df.low.iloc[-2]:
+                if df.low.iloc[-1] < df.low.iloc[-2]:
                     watchlist.remove(ticker)
 
                 # Place order when new hourly high is made if a new low hasn't been made first
                 if df.high.iloc[-1] > df.high.iloc[-2] and df.low.iloc[-1] >= df.low.iloc[-2]:
 
                     # Set the limit price. Higher stocks have higher limit ranges
-                    if df.open.iloc[-1] < 10:
+                    if df.open.iloc[-1] < 2:
+                        limit_price = round((df.high.iloc[-2] + 0.01), 2)
+                    elif df.open.iloc[-1] < 10:
                         limit_price = round((df.high.iloc[-2] + 0.02), 2)
                     else:
                         limit_price = round((df.high.iloc[-2] + 0.04), 2)
@@ -203,8 +205,7 @@ def build_dataframe(contract):
 def check_strategy(df):
     """ Will return True if strategic criteria is met """
 
-    # Prior bar must be an inside bar
-    # ? May need to add criteria so that the third previous candle is green as well as the inside candle
+    # Prior bar must be an inside bar                                                   #! Need to add criteria so that the third previous candle is green as well as the inside candle
     if df.low.iloc[-2] >= df.low.iloc[-3] and df.high.iloc[-2] <= df.high.iloc[-3]:
 
         # That inside bar must be green
@@ -271,7 +272,7 @@ def scanner():
     tag_values_1 = [
         # * Still want to find a real ATR type of tag
         TagValue("changePercAbove", 2),
-        TagValue("priceBelow", 40),
+        TagValue("priceBelow", 40),                         #! Would like to try only stocks under $20
         TagValue("priceAbove", 10),
         TagValue("volumeAbove", volume_higher_priced),
         TagValue("priceRangeAbove", "0.75"),
@@ -349,7 +350,7 @@ def adjust_all_stop_losses():
             df = util.df(get_hist_data(contract))
 
             # Replace previous stop order with new price
-            trade.order.auxPrice = df.low.iloc[-2]
+            trade.order.auxPrice = df.low.iloc[-2] - 0.01
             ib.placeOrder(contract, trade.order)
 
 
@@ -364,8 +365,7 @@ def open_trades_ticker_set():
 
 def commissions_paid():
     """ Return the total cost of commissions in USD """
-    commissions = sum(fill.commissionReport.commission for fill in ib.fills(
-    ))  # ? I think this is calculating for more than one day
+    commissions = sum(fill.commissionReport.commission for fill in ib.fills())      # ? I think this is calculating for more than one day
     return round(commissions)
 
 
