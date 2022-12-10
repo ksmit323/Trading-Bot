@@ -24,7 +24,7 @@ import backtesting
 import matplotlib
 import pandas as pd
 import talib                                                #! Maybe can pull some ATR or other volatiity data from here and match it with the scanners
-import webbrowser
+import webbrowser       
 import xml.etree.ElementTree as ET
 
 from ib_insync import *
@@ -40,6 +40,8 @@ else:
 
 def main():
 
+    # TODO: Can add to the strategy to include the three bar pattern.  See CNET for an example
+
     #? Would like to consider the Kelly Criterion for position sizing and having a new risk profile.  Need some actual statistical data tho
 
     #? How about a no trading ticker list for shitty tickers like TOPS
@@ -49,16 +51,14 @@ def main():
     # Initialize hour variable to help track time of day
     hour = 22
 
-    # Variable to track how many order have been placed per ticker in a trading day
-    orders_placed = 0
-
+    # Run continuously until program disconnects at end of day
     while True:
 
         # Establish the time of day
         # * NOTE: this is set to local time here in Vietnam
         time_of_day = time.localtime()  
 
-        # Update orders every hour
+        # Update orders every hour                             
         if hour != time_of_day.tm_hour:
 
             # Cancel unfilled buy orders
@@ -73,9 +73,9 @@ def main():
                 adjust_all_stop_losses()
                 print("Stop orders have been updated")
 
-        # Close all positions at the end of the day
+        # Close all positions at the end of the day           
         # * NOTE: this will not work when the market closes early
-        if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:
+        if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:      
             while True:
                 cancel_all_open_orders()
                 print("Now closing all positions")
@@ -84,7 +84,6 @@ def main():
                 if len(ib.positions()) == 0:
                     print("All positions have been closed")
                     print(f"Today's total commissions: ${commissions_paid()}")
-                    print(f"Total Orders Placed: {orders_placed}")
                     ib.disconnect()
                     sys.exit("You have been disconnected")
 
@@ -107,6 +106,9 @@ def main():
                 # Create a contract
                 contract = Stock(ticker, "SMART", "USD")
 
+                # Use qualify contracts function to automatically fill in additional info
+                ib.qualifyContracts(contract)
+
                 # Create a dataframe of 1 hour bars
                 df = build_dataframe(contract)
 
@@ -126,69 +128,82 @@ def main():
         # Build a ticker list with open trades
         tickers_with_open_trades = open_trades_ticker_set()
 
-        print("Starting iteration over watchlist")
-
         # Loop thru watchlist and check for any orders to be placed
-        for ticker in watchlist:
+        if len(watchlist) > 0:
+            print("Starting iteration over watchlist")
+            for ticker in watchlist:
 
-            # Check that order hasn't already been placed           #? May need to consider how to adjust this so more than one trade can be made on the same ticker
-            if ticker not in tickers_with_open_trades:              #? Could be done with a dictionary with tm_hour as the key and a list of tickers as the value]
-                                                                  
-                print(f"Checking ticker {ticker}")
+                # Check that order hasn't already been placed           #? May need to consider how to adjust this so more than one trade can be made on the same ticker
+                if ticker not in tickers_with_open_trades:              #? Could be done with a dictionary with tm_hour as the key and a list of tickers as the value]
+                                                                    
+                    print(f"Checking ticker {ticker}")
 
-                # Create a contract
-                contract = Stock(ticker, "SMART", "USD")
+                    # Create a contract
+                    contract = Stock(ticker, "SMART", "USD")
 
-                # Create a dataframe of 1 hour bars
-                df = build_dataframe(contract)
+                    # Use qualify contracts function to automatically fill in additional info
+                    ib.qualifyContracts(contract)
 
-                # Remove ticker from watchlist if it makes a new low from previous candle
-                if df.low.iloc[-1] < df.low.iloc[-2]:
+                    # Create a dataframe of 1 hour bars
+                    df = build_dataframe(contract)
+
+                    # Remove ticker from watchlist if it makes a new low from previous candle
+                    if df.low.iloc[-1] < df.low.iloc[-2]:
+                        watchlist.remove(ticker)
+                        print(f"{ticker} has been removed from watchlist")
+
+                    # Place order when new hourly high is made if a new low hasn't been made first
+                    if df.high.iloc[-1] > df.high.iloc[-2] and df.low.iloc[-1] >= df.low.iloc[-2]:
+
+                        # Set the limit price. Higher priced stocks have higher limit ranges
+                        if df.open.iloc[-1] < 1:
+                            limit_price = round((df.high.iloc[-2] + 0.005), 3)          #? Not sure if this will screw up the order placement with 3 decimals
+                        elif df.open.iloc[-1] < 10:
+                            limit_price = round((df.high.iloc[-2] + 0.01), 2)
+                        else:
+                            limit_price = round((df.high.iloc[-2] + 0.02), 2)
+
+                        # Set the stop loss
+                        if df.open.iloc[-1] < 1:
+                            stop_loss = round((df.low.iloc[-2] - 0.005), 3)
+                        else:
+                            stop_loss = round((df.low.iloc[-2] - 0.01), 2)
+
+                        # Set share size based on risk tolerance
+                        risk_per_share = round((limit_price - stop_loss), 2)
+                        quantity = share_size(risk_per_share)
+
+                        # Set the increment for taking profit levels. Always a multiple of risk per share
+                        take_profit_increment = risk_per_share * 3                        
+
+                        # First profit level based on risk per share
+                        take_profit_level = round((df.high.iloc[-2] + take_profit_increment), 2)
+
+                        # Place bracket order with take profit levels and a stop loss
+                        place_order(contract, "BUY", quantity,                         
+                                    limit_price, take_profit_level, take_profit_increment, stop_loss)                     
+
+                        # Confirm order placement with print statement
+                        print(f"An order has been placed for {ticker}. See TWS for details")
+
+                else:
+                    # Remove ticker from watchlist if it already has an order
                     watchlist.remove(ticker)
+                    print(f"{ticker} has been removed from watchlist")
 
-                # Place order when new hourly high is made if a new low hasn't been made first
-                if df.high.iloc[-1] > df.high.iloc[-2] and df.low.iloc[-1] >= df.low.iloc[-2]:
-
-                    # Set the limit price. Higher priced stocks have higher limit ranges
-                    if df.open.iloc[-1] < 1:
-                        limit_price = round((df.high.iloc[-2] + 0.005), 3)          #? Not sure if this will screw up the order placement with 3 decimals
-                    elif df.open.iloc[-1] < 10:
-                        limit_price = round((df.high.iloc[-2] + 0.01), 2)
-                    else:
-                        limit_price = round((df.high.iloc[-2] + 0.02), 2)
-
-                    # Set the stop loss
-                    stop_loss = round((df.low.iloc[-2] - 0.01), 2)
-
-                    # Set share size based on risk levels
-                    risk_per_share = round((limit_price - stop_loss), 2)
-                    quantity = share_size(risk_per_share)
-
-                    # Set the increment for taking profit levels. Always a multiple of risk per share
-                    take_profit_increment = risk_per_share * 3
-
-                    # First profit level based on risk per share
-                    take_profit_level = round((df.high.iloc[-2] + take_profit_increment), 2)
-
-                    # Place bracket order with take profit levels and a stop loss
-                    place_order(contract, "BUY", quantity,                         
-                                limit_price, take_profit_level, take_profit_increment, stop_loss)                     
-
-                    # Confirm order placement with print statement
-                    print(f"An order has been placed for {ticker}. See TWS for details")
-                    orders_placed += 1
-
-        print("Finished iterating over the watchlist")
+            print("Finished iterating over the watchlist")
+            
+        else:
+            # Sleep for a while if there are no tickers in watchlist
+            print("resting...")
+            ib.sleep(30)
 
         # Sleep interval to allow for updates
-        ib.sleep(10)
+        ib.sleep(20)
 
 
 def build_dataframe(contract):
     """ Returns a dataframe of 1 hour bars from a contract argument """
-
-    # Use qualify contracts function to automatically fill in additional info
-    ib.qualifyContracts(contract)
 
     # Request live updates for historical bars
     bars = get_hist_data(contract)
@@ -204,7 +219,7 @@ def build_dataframe(contract):
 
 
 def check_strategy(df):
-    """ Will return True if strategic criteria is met """                               #? Could maybe add to the strategy with three lower wicks in a row and buy on the next candle
+    """ Function checks if strategic criteria has been met """                               #? Could maybe add to the strategy with three lower wicks in a row and buy on the next candle
                                                                                         
     # Bar prior to inside bar must be green
     if df.close.iloc[-3] >= df.open.iloc[-3]:
@@ -242,9 +257,9 @@ def place_order(contract, action:str,
     The scalePriceIncrement is how much the profit level will
     increase up at each sell point.   
 
-    NOTE: Make sure to always handle order transmission accurately
-    the transmit attribute for all orders should be set to False
-    except for the last order, which is of course set to True
+    NOTE: Make sure to always handle order transmission accurately.
+    The transmit attribute for all orders should be set to False
+    except for the last order, which is of course set to True.
     
     """
     # Get an order ID to assign to the parent order
@@ -307,7 +322,7 @@ def get_hist_data(contract):
 def scanner(time_of_day):
     """ 
     Returns a list of tickers to be used for potential trades 
-    Pass on a volume argument.  Ideally, you
+    Pass on a time of day argument.  Ideally, you
     want to screen for higher volume as the day progresses.  
     There are two scan subscriptions being made because IB only returns
     a maximum of 50 tickers per subscription.  Subs are divided by stock price.
@@ -318,11 +333,13 @@ def scanner(time_of_day):
         volume_higher_priced = 500_000
         volume_lower_priced = 500_000
     elif time_of_day.tm_hour == 0 or time_of_day.tm_hour == 1:
-        volume_higher_priced = 600_000
+        volume_higher_priced = 500_000
         volume_lower_priced = 750_000
     else:
         volume_higher_priced = 750_000
         volume_lower_priced = 1e6
+    
+    volume_under_one_dollar = 1e6
 
     # Create a ScannerSubscription to submit to the reqScannerData method
     # * Currently only trading on the NASDAQ to avoid AMEX and overtrading
@@ -340,39 +357,39 @@ def scanner(time_of_day):
     tag_values_1 = [
         # * Still want to find a real ATR type of tag
         TagValue("changePercAbove", 3),
-        TagValue("priceBelow", 15),                           
-        TagValue("priceAbove", 10),
+        TagValue("priceBelow", 7),                           
+        TagValue("priceAbove", 5),
         TagValue("volumeAbove", volume_higher_priced),
-        TagValue("priceRangeAbove", "0.7"),
+        TagValue("priceRangeAbove", "0.5"),
         TagValue("volumeRateAbove", 0), 
-        TagValue("marketCapBelow1e6", 1500)]
+        TagValue("marketCapBelow1e6", 700)]
 
     tag_values_2 = [                                 
         TagValue("changePercAbove", "3"),
-        TagValue("priceBelow", 10),
-        TagValue("priceAbove", 6),
-        TagValue("volumeAbove", volume_lower_priced),
-        TagValue("priceRangeAbove", "0.5"),
-        TagValue("volumeRateAbove", 0),
-        TagValue("marketCapBelow1e6", 1000)]
-    
-    tag_values_3 = [                                 
-        TagValue("changePercAbove", "4"),
-        TagValue("priceBelow", 6),
+        TagValue("priceBelow", 5),
         TagValue("priceAbove", 3),
         TagValue("volumeAbove", volume_lower_priced),
         TagValue("priceRangeAbove", "0.3"),
         TagValue("volumeRateAbove", 0),
-        TagValue("marketCapBelow1e6", 600)]
-
-    tag_values_4 = [                                 
+        TagValue("marketCapBelow1e6", 500)]
+    
+    tag_values_3 = [                                 
         TagValue("changePercAbove", "4"),
         TagValue("priceBelow", 3),
-        TagValue("priceAbove", 0.3),
+        TagValue("priceAbove", 1),
         TagValue("volumeAbove", volume_lower_priced),
         TagValue("priceRangeAbove", "0.1"),
         TagValue("volumeRateAbove", 0),
-        TagValue("marketCapBelow1e6", 400)]
+        TagValue("marketCapBelow1e6", 300)]
+
+    tag_values_4 = [                                 
+        TagValue("changePercAbove", "4"),
+        TagValue("priceBelow", 1),
+        TagValue("priceAbove", 0.2),
+        TagValue("volumeAbove", volume_under_one_dollar),
+        TagValue("priceRangeAbove", "0.05"),
+        TagValue("volumeRateAbove", 0),
+        TagValue("marketCapBelow1e6", 100)]
 
     # The tag_values are given as 3rd argument; the 2nd argument must always be an empty list
     # (IB has not documented the 2nd argument and it's not clear what it does)
@@ -390,7 +407,9 @@ def scanner(time_of_day):
     symbols_lower_priced = symbols_3 + symbols_4
 
     print(len(symbols_higher_priced), "tickers found for higher priced stocks")
+    print(symbols_higher_priced)
     print(len(symbols_lower_priced), "tickers found for lower priced stocks")
+    print(symbols_lower_priced)
     return symbols_higher_priced + symbols_lower_priced
 
 
@@ -423,8 +442,8 @@ def share_size(risk_per_share):
     Function will determine the correct position sizing
     based on risk amount, account size and risk per share
     """
-    account_size = 2_000
-    risk_percent = 0.005
+    account_size = 1700
+    risk_percent = 0.02
     shares = round((account_size * risk_percent) / risk_per_share)
     return shares
 
@@ -446,7 +465,10 @@ def adjust_all_stop_losses():
 
             # Replace previous stop order with new price
             try:
-                trade.order.auxPrice = df.low.iloc[-2] - 0.01
+                if df.low.iloc[-2] < 1:
+                    trade.order.auxPrice = df.low.iloc[-2] - 0.005
+                else:
+                    trade.order.auxPrice = df.low.iloc[-2] - 0.01
                 ib.placeOrder(contract, trade.order)
             except AttributeError:
                 print(f"Stop loss not updated for: {trade.contract.symbol}")
