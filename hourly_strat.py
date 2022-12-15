@@ -14,14 +14,15 @@ The Trading Protocol is as follows:
 IMPORTANT NOTE: This strategy is not capable of executing any
 trades within the first 1.5 hours of the trading day because
 the strategy requires at least three 1-hr bars of information
+
+NOTE on Agression: The profit taking strategy is very soft right now in a weak
+market.  However, in a more aggressive market where buying is stronger, the profit
+taking orders need to reflect that with higher R/R levels.
 """
 
 import time
 import sys
 
-import bt  # another backtesting library; got the documentation bookmarked
-import backtesting
-import matplotlib
 import pandas as pd
 import talib                                                #! Maybe can pull some ATR or other volatiity data from here and match it with the scanners
 import webbrowser       
@@ -40,9 +41,7 @@ else:
 
 def main():
 
-    # TODO: Can add to the strategy to include the three bar pattern.  See CNET for an example
-
-    #? Would like to consider the Kelly Criterion for position sizing and having a new risk profile.  Need some actual statistical data tho
+    #? Will consider the Kelly Criterion for position sizing and having a new risk profile.  Need some actual statistical data tho
 
     #? How about a no trading ticker list for shitty tickers like TOPS
 
@@ -71,14 +70,14 @@ def main():
             if len(ib.positions()) > 0:
                 ib.sleep(10)
                 adjust_all_stop_losses()
-                print("Stop orders have been updated")
+                print("*** Stop orders have been updated ***")
 
         # Close all positions at the end of the day           
         # * NOTE: this will not work when the market closes early
         if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:      
             while True:
                 cancel_all_open_orders()
-                print("Now closing all positions")
+                print("*** Now closing all positions ***")
                 close_all_positions()
                 ib.sleep(20)
                 if len(ib.positions()) == 0:
@@ -88,49 +87,56 @@ def main():
                     sys.exit("You have been disconnected")
 
         # Loop thru each ticker in the scanner results and add to watchlist
-        # * This loop should only run once or twice per hour hence the updated hour variable
-        # * The second conditional in the If statement is to allow the scanner to run one more time per hour
-        if hour != time_of_day.tm_hour or time_of_day.tm_min == 30:
+        # * This loop should only run once per hour hence the updated hour variable at the end
+        if hour != time_of_day.tm_hour:
 
             # Initialize empty watchlist variable
             watchlist = []
 
-            # Store scanner results as a variable so list doesn't change while iterating
-            print("Scanning for tickers")
-            scan_results = scanner(time_of_day)
+            # Do not run after 2pm in the afternoon.  No late in the day trading 
+            # #* This isn't yet implemented, set hours to 2 and 3 respectively when ready to avoid late afternoon trading
+            if time_of_day.tm_hour != 5 or time_of_day.tm_hour != 6:
+                # Store scanner results as a variable so list doesn't change while iterating
+                print("Scanning for tickers")
+                scan_results = scanner(time_of_day)
 
-            print("Now adding tickers to watchlist")
+                print("Now adding tickers to watchlist")
 
-            for ticker in scan_results:
+                for ticker in scan_results:
 
-                # Create a contract
-                contract = Stock(ticker, "SMART", "USD")
+                    # Create a contract
+                    contract = Stock(ticker, "SMART", "USD")
 
-                # Use qualify contracts function to automatically fill in additional info
-                ib.qualifyContracts(contract)
+                    # Use qualify contracts function to automatically fill in additional info
+                    ib.qualifyContracts(contract)
 
-                # Create a dataframe of 1 hour bars
-                df = build_dataframe(contract)
+                    # Create a dataframe of 1 hour bars
+                    df = build_dataframe(contract)
 
-                # Append ticker to watchlist if it passes the strategy check
-                try:
-                    if check_strategy(df):
-                        watchlist.append(ticker)
-                except AttributeError:
-                    continue
+                    # Append ticker to watchlist if it passes the strategy check
+                    try:
+                        if check_strategy(df):
+                            watchlist.append(ticker)
+                    except AttributeError:
+                        continue
 
-                # Update hour variable to prevent loop from running again
+                    # Update hour variable to prevent loop from running again
+                    hour = time_of_day.tm_hour
+
+                print(f"{len(watchlist)} tickers have been added to the watchlist")
+                print(watchlist)
+            
+            else:
                 hour = time_of_day.tm_hour
-
-            print(f"{len(watchlist)} tickers have been added to the watchlist")
-            print(watchlist)
-
-        # Build a ticker list with open trades
-        tickers_with_open_trades = open_trades_ticker_set()
 
         # Loop thru watchlist and check for any orders to be placed
         if len(watchlist) > 0:
+
             print("Starting iteration over watchlist")
+
+            # Build a ticker list with open trades
+            tickers_with_open_trades = open_trades_ticker_set()
+
             for ticker in watchlist:
 
                 # Check that order hasn't already been placed           #? May need to consider how to adjust this so more than one trade can be made on the same ticker
@@ -150,14 +156,14 @@ def main():
                     # Remove ticker from watchlist if it makes a new low from previous candle
                     if df.low.iloc[-1] < df.low.iloc[-2]:
                         watchlist.remove(ticker)
-                        print(f"{ticker} has been removed from watchlist")
+                        print(f"*** {ticker} has been removed from watchlist ***")
 
                     # Place order when new hourly high is made if a new low hasn't been made first
                     if df.high.iloc[-1] > df.high.iloc[-2] and df.low.iloc[-1] >= df.low.iloc[-2]:
 
                         # Set the limit price. Higher priced stocks have higher limit ranges
                         if df.open.iloc[-1] < 1:
-                            limit_price = round((df.high.iloc[-2] + 0.005), 3)          #? Not sure if this will screw up the order placement with 3 decimals
+                            limit_price = round((df.high.iloc[-2] + 0.005), 3)         
                         elif df.open.iloc[-1] < 10:
                             limit_price = round((df.high.iloc[-2] + 0.01), 2)
                         else:
@@ -173,8 +179,8 @@ def main():
                         risk_per_share = round((limit_price - stop_loss), 2)
                         quantity = share_size(risk_per_share)
 
-                        # Set the increment for taking profit levels. Always a multiple of risk per share
-                        take_profit_increment = risk_per_share * 3                        
+                        # Set take_profit increment. Always a multiple of risk per share
+                        take_profit_increment = risk_per_share * 2                        
 
                         # First profit level based on risk per share
                         take_profit_level = round((df.high.iloc[-2] + take_profit_increment), 2)
@@ -219,7 +225,7 @@ def build_dataframe(contract):
 
 
 def check_strategy(df):
-    """ Function checks if strategic criteria has been met """                               #? Could maybe add to the strategy with three lower wicks in a row and buy on the next candle
+    """ Function checks if strategic criteria has been met """               
                                                                                         
     # Bar prior to inside bar must be green
     if df.close.iloc[-3] >= df.open.iloc[-3]:
@@ -260,7 +266,6 @@ def place_order(contract, action:str,
     NOTE: Make sure to always handle order transmission accurately.
     The transmit attribute for all orders should be set to False
     except for the last order, which is of course set to True.
-    
     """
     # Get an order ID to assign to the parent order
     parent_order_id = ib.client.getReqId()
@@ -282,7 +287,7 @@ def place_order(contract, action:str,
     take_profit.totalQuantity = quantity
     take_profit.lmtPrice = take_profit_limit_price
     take_profit.scaleInitLevelSize = quantity // 3
-    take_profit.scaleSubsLevelSize = quantity // 3
+    take_profit.scaleSubsLevelSize = quantity // 4
     take_profit.scalePriceIncrement = take_profit_increment
     take_profit.parentId = parent_order_id
     take_profit.transmit = False
@@ -443,7 +448,7 @@ def share_size(risk_per_share):
     based on risk amount, account size and risk per share
     """
     account_size = 1700
-    risk_percent = 0.02
+    risk_percent = 0.01
     shares = round((account_size * risk_percent) / risk_per_share)
     return shares
 
@@ -466,9 +471,9 @@ def adjust_all_stop_losses():
             # Replace previous stop order with new price
             try:
                 if df.low.iloc[-2] < 1:
-                    trade.order.auxPrice = df.low.iloc[-2] - 0.005
+                    trade.order.auxPrice = round((df.low.iloc[-2] - 0.005), 3)
                 else:
-                    trade.order.auxPrice = df.low.iloc[-2] - 0.01
+                    trade.order.auxPrice = round((df.low.iloc[-2] - 0.01), 2)
                 ib.placeOrder(contract, trade.order)
             except AttributeError:
                 print(f"Stop loss not updated for: {trade.contract.symbol}")
@@ -485,7 +490,7 @@ def open_trades_ticker_set():
 
 def commissions_paid():
     """ Return the total cost of commissions in USD """
-    commissions = sum(fill.commissionReport.commission for fill in ib.fills())      # ? I think this is calculating for more than one day
+    commissions = sum(fill.commissionReport.commission for fill in ib.fills())  
     return round(commissions)
 
 
