@@ -1,0 +1,28 @@
+2022/12/02 Changes:
+- Added to strategy for a green candle prior to inside candle
+- Added higher constraints for price range/volatility
+- Scale volume up over time
+- Increase daily percent change
+- Reduced price threshold
+
+2022/12/05 Changes:
+- Added a Market Cap filter to the scanners to only trade small caps and under
+- Removed the spread orders and now just placing one order at a time to reduce the insane commissions
+
+2022/12/06 Changes:
+- Changed the scanners to limit prices to just $15. Also had to adjust the scanner price range filter to accomodate.
+- BIG CHANGE: I completely redid the place_order function to more hard code the bracket order so I could include the profit level attributes
+
+2022/12/09 Changes:
+- Reducing scanned tickers down to under $7 to focus on trading less with bigger size
+  - Had to change the stop losses and adjust_stop_loss function to accomodate stocks under a $1
+- Increased risk per trade percentage
+
+2022/12/14 Changes:
+- Reducing the risk percent back to 1%.  The sizing is still too big for my account
+- Changed the profit taking strategy to be more aggressive.  Profit taking on 2 R/R instead of 3 and with 4 sell orders
+  - The sell orders can vary with the scale attributes in the take_profit object
+
+2022/12/15 Changes:
+- Coded in the framework for not trading late afternoon hours.  The code isn't actually implemented yet though. 
+  - Added line 98, if statement
