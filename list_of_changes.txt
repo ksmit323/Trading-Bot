@@ -26,3 +26,14 @@
 2022/12/15 Changes:
 - Coded in the framework for not trading late afternoon hours.  The code isn't actually implemented yet though. 
   - Added line 98, if statement
+
+2022/12/16 Changes:
+- Got rid of the get_historical_data function and combined it with build_dataframe.  Had to change it in the adjust stop loss function as well
+  - Lines 461, 217
+
+2022/12/17 Changes:
+- Adding a second strategy for two red bars with an inside green bars
+  - Lines 252 and 120
+
+2022/12/19 Changes:
+- No longer trading after 2am
