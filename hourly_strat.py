@@ -47,6 +47,8 @@ def main():
 
     #? Have been considering only trading in the morning to avoid afternoon chop
 
+    #? Strategy change consideration: IMV, 12/15 and CNET, 12/08.  Three red bars, fourth is inside, fifth breaks out.  Rare but powerful
+
     # Initialize hour variable to help track time of day
     hour = 22
 
@@ -94,8 +96,7 @@ def main():
             watchlist = []
 
             # Do not run after 2pm in the afternoon.  No late in the day trading 
-            # #* This isn't yet implemented, set hours to 2 and 3 respectively when ready to avoid late afternoon trading
-            if time_of_day.tm_hour != 5 or time_of_day.tm_hour != 6:
+            if time_of_day.tm_hour != 2 or time_of_day.tm_hour != 3:
                 # Store scanner results as a variable so list doesn't change while iterating
                 print("Scanning for tickers")
                 scan_results = scanner(time_of_day)
@@ -115,7 +116,7 @@ def main():
 
                     # Append ticker to watchlist if it passes the strategy check
                     try:
-                        if check_strategy(df):
+                        if check_strategy_1(df) or check_strategy_2(df):
                             watchlist.append(ticker)
                     except AttributeError:
                         continue
@@ -139,7 +140,7 @@ def main():
 
             for ticker in watchlist:
 
-                # Check that order hasn't already been placed           #? May need to consider how to adjust this so more than one trade can be made on the same ticker
+                # Check an order hasn't already been placed             #? May need to consider how to adjust this so more than one trade can be made on the same ticker
                 if ticker not in tickers_with_open_trades:              #? Could be done with a dictionary with tm_hour as the key and a list of tickers as the value]
                                                                     
                     print(f"Checking ticker {ticker}")
@@ -212,7 +213,15 @@ def build_dataframe(contract):
     """ Returns a dataframe of 1 hour bars from a contract argument """
 
     # Request live updates for historical bars
-    bars = get_hist_data(contract)
+    bars = ib.reqHistoricalData(
+        contract,
+        endDateTime="",
+        durationStr="1 D",
+        barSizeSetting="1 hour",
+        whatToShow="TRADES",
+        useRTH=True,
+        formatDate=1,
+        keepUpToDate=True)
 
     # Tell ib_insync library to call the on_bar_update function when new data is received
     # Set callback function for bar data
@@ -224,7 +233,7 @@ def build_dataframe(contract):
     return df
 
 
-def check_strategy(df):
+def check_strategy_1(df):
     """ Function checks if strategic criteria has been met """               
                                                                                         
     # Bar prior to inside bar must be green
@@ -237,6 +246,21 @@ def check_strategy(df):
             if df.close.iloc[-2] >= df.open.iloc[-2]:
                 return True
 
+    return False
+
+def check_strategy_2(df):
+    """ Function checks for the second setup """
+
+    # First and second bars to be checked both must be red
+    if df.close.iloc[-4] < df.open.iloc[-4] and df.close.iloc[-3] < df.open.iloc[-3]:
+
+        # Prior bar must be an inside bar                                                   
+        if df.low.iloc[-2] > df.low.iloc[-3] and df.high.iloc[-2] < df.high.iloc[-3]:
+
+            # Bar must be green
+            if df.close.iloc[-2] > df.open.iloc[-2]:
+                return True
+    
     return False
 
 
@@ -306,22 +330,6 @@ def place_order(contract, action:str,
 
     for order in bracket_order:
         ib.placeOrder(contract, order)
-
-
-def get_hist_data(contract):
-    """ Return historical data with live updates """
-
-    bars = ib.reqHistoricalData(
-        contract,
-        endDateTime="",
-        durationStr="1 D",
-        barSizeSetting="1 hour",
-        whatToShow="TRADES",
-        useRTH=True,
-        formatDate=1,
-        keepUpToDate=True)
-
-    return bars
 
 
 def scanner(time_of_day):
@@ -464,9 +472,7 @@ def adjust_all_stop_losses():
             ib.qualifyContracts(contract)
 
             # Make sure the bars data is up to date
-            bars = get_hist_data(contract)
-            bars.updateEvent += on_bar_update
-            df = util.df(get_hist_data(contract))
+            df = build_dataframe(contract)
 
             # Replace previous stop order with new price
             try:
@@ -478,6 +484,7 @@ def adjust_all_stop_losses():
             except AttributeError:
                 print(f"Stop loss not updated for: {trade.contract.symbol}")
                 continue
+
 
 def open_trades_ticker_set():
     """ Returns a set of tickers with open trades """
