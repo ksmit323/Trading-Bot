@@ -24,7 +24,7 @@ import time
 import sys
 
 import pandas as pd
-import talib                                                #! Maybe can pull some ATR or other volatiity data from here and match it with the scanners
+import talib                                                #? Maybe can pull some ATR or other volatiity data from here and match it with the scanners
 import webbrowser       
 import xml.etree.ElementTree as ET
 
@@ -32,7 +32,7 @@ from ib_insync import *
 
 # Instantiate IB class and establish connection
 ib = IB()
-ib.connect('127.0.0.1', 7497, 1)  #* Change port id when on live account to 7496
+ib.connect('127.0.0.1', 7497, 2)  #! Change port id when on live account to 7496
 if ib.isConnected():
     print("Connection established")
 else:
@@ -40,6 +40,8 @@ else:
 
 
 def main():
+
+    # TODO: Will need to consider altering strategy 2 to only include two red candles which both make lower lows, so neither should be an inside candle
 
     #? Will consider the Kelly Criterion for position sizing and having a new risk profile.  Need some actual statistical data tho
 
@@ -95,40 +97,39 @@ def main():
             # Initialize empty watchlist variable
             watchlist = []
 
-            # Do not run after 2pm in the afternoon.  No late in the day trading 
-            if time_of_day.tm_hour != 2 or time_of_day.tm_hour != 3:
-                # Store scanner results as a variable so list doesn't change while iterating
-                print("Scanning for tickers")
-                scan_results = scanner(time_of_day)
+            # Store scanner results as a variable so list doesn't change while iterating
+            print("Scanning for tickers")
+            scan_results = scanner(time_of_day)
 
-                print("Now adding tickers to watchlist")
+            print("Now adding tickers to watchlist")
 
-                for ticker in scan_results:
+            for ticker in scan_results:
 
-                    # Create a contract
-                    contract = Stock(ticker, "SMART", "USD")
+                # Create a contract
+                contract = Stock(ticker, "SMART", "USD")
 
-                    # Use qualify contracts function to automatically fill in additional info
-                    ib.qualifyContracts(contract)
+                # Use qualify contracts function to automatically fill in additional info
+                ib.qualifyContracts(contract)
 
-                    # Create a dataframe of 1 hour bars
-                    df = build_dataframe(contract)
+                # Create a dataframe of 1 hour bars
+                df = build_dataframe(contract)
 
-                    # Append ticker to watchlist if it passes the strategy check
-                    try:
-                        if check_strategy_1(df) or check_strategy_2(df):
+                # Append ticker to watchlist if it passes the strategy check
+                try:
+                    # Do not trade this strategy after 2am
+                    if (not 1 > time_of_day.tm_hour < 4) and check_strategy_1(df):       
+                        watchlist.append(ticker)
+                    # This strategy can't be traded until after midnight
+                    if time_of_day.tm_hour < 4 and check_strategy_2(df):
                             watchlist.append(ticker)
-                    except AttributeError:
-                        continue
+                except AttributeError:
+                    continue
 
-                    # Update hour variable to prevent loop from running again
-                    hour = time_of_day.tm_hour
-
-                print(f"{len(watchlist)} tickers have been added to the watchlist")
-                print(watchlist)
-            
-            else:
-                hour = time_of_day.tm_hour
+            print(f"{len(watchlist)} tickers have been added to the watchlist")
+            print(watchlist)
+        
+            # Update hour variable to prevent loop from running again
+            hour = time_of_day.tm_hour
 
         # Loop thru watchlist and check for any orders to be placed
         if len(watchlist) > 0:
@@ -141,7 +142,7 @@ def main():
             for ticker in watchlist:
 
                 # Check an order hasn't already been placed             #? May need to consider how to adjust this so more than one trade can be made on the same ticker
-                if ticker not in tickers_with_open_trades:              #? Could be done with a dictionary with tm_hour as the key and a list of tickers as the value]
+                if ticker not in tickers_with_open_trades:              #? Could be done with a dictionary with tm_hour as the key and a list of tickers as the value
                                                                     
                     print(f"Checking ticker {ticker}")
 
@@ -248,14 +249,15 @@ def check_strategy_1(df):
 
     return False
 
+
 def check_strategy_2(df):
     """ Function checks for the second setup """
 
     # First and second bars to be checked both must be red
-    if df.close.iloc[-4] < df.open.iloc[-4] and df.close.iloc[-3] < df.open.iloc[-3]:
+    if (df.close.iloc[-4] < df.open.iloc[-4]) and (df.close.iloc[-3] < df.open.iloc[-3]):
 
         # Prior bar must be an inside bar                                                   
-        if df.low.iloc[-2] > df.low.iloc[-3] and df.high.iloc[-2] < df.high.iloc[-3]:
+        if (df.low.iloc[-2] > df.low.iloc[-3]) and (df.high.iloc[-2] < df.high.iloc[-3]):
 
             # Bar must be green
             if df.close.iloc[-2] > df.open.iloc[-2]:
