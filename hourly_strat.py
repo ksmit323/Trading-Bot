@@ -52,7 +52,7 @@ def main():
     #? Strategy change consideration: IMV, 12/15 and CNET, 12/08.  Three red bars, fourth is inside, fifth breaks out.  Rare but powerful
 
     # Initialize hour variable to help track time of day
-    hour = 22
+    hour = 21
 
     # Run continuously until program disconnects at end of day
     while True:
@@ -116,12 +116,10 @@ def main():
 
                 # Append ticker to watchlist if it passes the strategy check
                 try:
-                    # Do not trade this strategy after 2am
-                    if (not 1 > time_of_day.tm_hour < 4) and check_strategy_1(df):       
+                    if check_strategy_1(df, time_of_day.tm_hour):       
                         watchlist.append(ticker)
-                    # This strategy can't be traded until after midnight
-                    if time_of_day.tm_hour < 4 and check_strategy_2(df):
-                            watchlist.append(ticker)
+                    if check_strategy_2(df):
+                        watchlist.append(ticker, time_of_day.tm_hour)
                 except AttributeError:
                     continue
 
@@ -197,7 +195,7 @@ def main():
                 else:
                     # Remove ticker from watchlist if it already has an order
                     watchlist.remove(ticker)
-                    print(f"{ticker} has been removed from watchlist")
+                    print(f"{ticker} already has an order. It has been removed from watchlist")
 
             print("Finished iterating over the watchlist")
             
@@ -224,19 +222,19 @@ def build_dataframe(contract):
         formatDate=1,
         keepUpToDate=True)
 
-    # Tell ib_insync library to call the on_bar_update function when new data is received
-    # Set callback function for bar data
-    bars.updateEvent += on_bar_update
-
     # Build dataframe from bars data list
     df = util.df(bars)
 
     return df
 
 
-def check_strategy_1(df):
-    """ Function checks if strategic criteria has been met """               
-                                                                                        
+def check_strategy_1(df, hour):
+    """ Function checks if strategic criteria has been met """   
+
+    # No trading after 3am
+    if hour == 3:
+        return False
+
     # Bar prior to inside bar must be green
     if df.close.iloc[-3] >= df.open.iloc[-3]:
 
@@ -250,8 +248,12 @@ def check_strategy_1(df):
     return False
 
 
-def check_strategy_2(df):
+def check_strategy_2(df, hour):
     """ Function checks for the second setup """
+
+    # Cannot trade until midnight
+    if hour > 3:
+        return False
 
     # First and second bars to be checked both must be red
     if (df.close.iloc[-4] < df.open.iloc[-4]) and (df.close.iloc[-3] < df.open.iloc[-3]):
@@ -358,26 +360,27 @@ def scanner(time_of_day):
 
     # Create a ScannerSubscription to submit to the reqScannerData method
     # * Currently only trading on the NASDAQ to avoid AMEX and overtrading
+    # * STK.US.MAJOR to trade on all major exchanges
     sub_1 = ScannerSubscription(
         instrument="STK",
         locationCode="STK.NASDAQ",
         scanCode="TOP_OPEN_PERC_GAIN")
 
-    # sub_2 = ScannerSubscription(
-    #    instrument="STK",
-    #    locationCode="STK.NYSE",
-    #    scanCode="TOP_OPEN_PERC_GAIN")
+    sub_2 = ScannerSubscription(
+       instrument="STK",
+       locationCode="STK.NASDAQ",
+       scanCode="TOP_OPEN_PERC_GAIN")
 
     # Set scanner criteria with the appropriate tag values
     tag_values_1 = [
         # * Still want to find a real ATR type of tag
         TagValue("changePercAbove", 3),
-        TagValue("priceBelow", 7),                           
+        TagValue("priceBelow", 8),                           
         TagValue("priceAbove", 5),
         TagValue("volumeAbove", volume_higher_priced),
         TagValue("priceRangeAbove", "0.5"),
         TagValue("volumeRateAbove", 0), 
-        TagValue("marketCapBelow1e6", 700)]
+        TagValue("marketCapBelow1e6", 800)]
 
     tag_values_2 = [                                 
         TagValue("changePercAbove", "3"),
@@ -410,8 +413,8 @@ def scanner(time_of_day):
     # (IB has not documented the 2nd argument and it's not clear what it does)
     scan_data_1 = ib.reqScannerData(sub_1, [], tag_values_1)
     scan_data_2 = ib.reqScannerData(sub_1, [], tag_values_2)
-    scan_data_3 = ib.reqScannerData(sub_1, [], tag_values_3)
-    scan_data_4 = ib.reqScannerData(sub_1, [], tag_values_4)
+    scan_data_3 = ib.reqScannerData(sub_2, [], tag_values_3)
+    scan_data_4 = ib.reqScannerData(sub_2, [], tag_values_4)
 
     # Add tickers to a list and return that list
     symbols_1 = [sd.contractDetails.contract.symbol for sd in scan_data_1]
