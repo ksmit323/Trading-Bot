@@ -5,7 +5,7 @@ to filter out stocks that would qualify for a swing.
 This would include inside candles with big volume spikes
 on small cap stocks under $10 with a certain volatility.
 
-There will be both a screening for both daily and weekly candles (maybe monthly).
+The strategy can accomodate for both the daily and weekly.
 
 A list of tickers that may be helpful as examples to tune the scanner on:
 - CABA, weekly
@@ -18,16 +18,13 @@ A list of tickers that may be helpful as examples to tune the scanner on:
 - NMTC, weekly
 """
 
-import pandas as pd
-import talib                                               
 from ib_insync import *
 import sys
-import csv
 
 
 # Instantiate IB class and establish connection
 ib = IB()
-ib.connect('127.0.0.1', 7497, 2)  #* Change port id when on live account to 7496
+ib.connect('127.0.0.1', 7497, 1)  #* Change port id when on live account to 7496
 if ib.isConnected():
     print("Connection established")
 else:
@@ -35,16 +32,10 @@ else:
 
 
 def main():
-    """ Starting out with building the weekly scanner.  Will consider daily after. """
-
-    # Ensure correct usage
-    if len(sys.argv) != 2:
-        sys.exit("Usage: python swing_strat.py FILENAME")
-    
 
     # Read in scan results from CSV file
     print("Reading in scan results")
-    filename = sys.argv[1]
+    filename = "scanresults.csv"
     scan_results = scanner(filename)
     print(f"{len(scan_results)} tickers found in scanner")
 
@@ -66,7 +57,7 @@ def main():
 
         # Add ticker to watchlist if strategy function returns True
         try:
-            if check_strategy(df):
+            if check_strategy_2(df):
                 watchlist.append(ticker)
         except AttributeError:
             continue
@@ -93,8 +84,8 @@ def build_dataframe(contract):
     bars = ib.reqHistoricalData(
         contract,
         endDateTime="",
-        durationStr="7 D",
-        barSizeSetting="1 day",
+        durationStr="5 D",          # Change to "5 W" for the weekly, "5 D" for daily
+        barSizeSetting="1 day",     # Change to "1 week" for weekly, "1 day" for the daily
         whatToShow="TRADES",
         useRTH=True,
         formatDate=1,
@@ -110,10 +101,13 @@ def check_strategy(df):
     """ Function checks if strategic criteria has been met """                               
                                                                                         
     # Bar prior to inside bar must be green
-    if df.close.iloc[-2] >= df.open.iloc[-2]:
+    if df.close.iloc[-2] > df.open.iloc[-2]:
 
         # Current bar must be an inside bar                                                   
         if df.low.iloc[-1] >= df.low.iloc[-2] and df.high.iloc[-1] <= df.high.iloc[-2]:
+            return True
+        elif df.close.iloc[-3] > df.open.iloc[-3] and df.low.iloc[-1] >= df.low.iloc[-2] and df.high.iloc[-1] <= df.high.iloc[-2]:
+            return True
 
             # That inside bar must be green
             #if df.close.iloc[-2] >= df.open.iloc[-2]:
@@ -122,8 +116,20 @@ def check_strategy(df):
     return False
 
 
-def place_order():
-    ...
+def check_strategy_2(df):
+    """ Function checks for the second setup """
+
+    # First and second bars to be checked both must be red
+    #if df.close.iloc[-3] < df.open.iloc[-3] and df.close.iloc[-2] < df.open.iloc[-2]:
+
+        # Prior bar must be an inside bar                                                   
+    if df.low.iloc[-1] > df.low.iloc[-2] and df.high.iloc[-1] < df.high.iloc[-2]:
+
+            # Bar must be green
+            if df.close.iloc[-1] > df.open.iloc[-1]:
+                return True
+    
+    return False
 
 
 def share_size(risk_per_share):
