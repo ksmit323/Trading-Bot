@@ -37,3 +37,19 @@
 
 2022/12/19 Changes:
 - No longer trading after 2am
+
+2022/12/20 Changes:
+- No longer trading after 2am with check_strategy_1
+- Will continue to trade after 2am for the second strategy
+  - Lines 99, 118, 121
+
+2022/12/23 Changes:
+- Got rid of the volume rate filter in scanner
+
+2022/12/28 Changes:
+- Changed back to US.MAJOR stocks instead of just NASDAQ
+  - Line 358
+
+2022/12/30 Changes:
+- Moved the strategy time constraints to within the strategy functions themselves
+  - Lines 119-122, 234-236, 254-256
