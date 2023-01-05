@@ -51,6 +51,11 @@ def main():
 
     #? Strategy change consideration: IMV, 12/15 and CNET, 12/08.  Three red bars, fourth is inside, fifth breaks out.  Rare but powerful
 
+    # Build current swing trading ticker list to avoid interacting with throughout the day
+    swing_trades = []
+    for position in ib.positions():
+        swing_trades.append(position.contract.symbol)
+
     # Initialize hour variable to help track time of day
     hour = 21
 
@@ -65,26 +70,27 @@ def main():
         if hour != time_of_day.tm_hour:
 
             # Cancel unfilled buy orders
-            for order in ib.openOrders():
-                if order.action == "BUY":
-                    ib.cancelOrder(order)
-                    print("Unfilled order cancelled")
+            for trade in ib.openTrades():
+                if trade.contract.symbol not in swing_trades:
+                    if trade.order.action == "BUY":
+                        ib.cancelOrder(trade.order)
+                        print("Unfilled order cancelled")
 
             # Update stop losses 
             if len(ib.positions()) > 0:
                 ib.sleep(10)
-                adjust_all_stop_losses()
+                adjust_hourly_stop_losses(swing_trades)
                 print("*** Stop orders have been updated ***")
 
         # Close all positions at the end of the day           
         # * NOTE: this will not work when the market closes early
         if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:      
             while True:
-                cancel_all_open_orders()
+                cancel_hourly_open_orders()
                 print("*** Now closing all positions ***")
-                close_all_positions()
+                close_all_hourly_positions(swing_trades)
                 ib.sleep(20)
-                if len(ib.positions()) == 0:
+                if len(ib.positions()) - len(swing_trades) == 0:
                     print("All positions have been closed")
                     print(f"Today's total commissions: ${commissions_paid()}")
                     ib.disconnect()
@@ -105,23 +111,25 @@ def main():
 
             for ticker in scan_results:
 
-                # Create a contract
-                contract = Stock(ticker, "SMART", "USD")
+                if ticker not in swing_trades:
 
-                # Use qualify contracts function to automatically fill in additional info
-                ib.qualifyContracts(contract)
+                    # Create a contract
+                    contract = Stock(ticker, "SMART", "USD")
 
-                # Create a dataframe of 1 hour bars
-                df = build_dataframe(contract)
+                    # Use qualify contracts function to automatically fill in additional info
+                    ib.qualifyContracts(contract)
 
-                # Append ticker to watchlist if it passes the strategy check
-                try:
-                    if check_strategy_1(df, time_of_day.tm_hour):       
-                        watchlist.append(ticker)
-                    if check_strategy_2(df):
-                        watchlist.append(ticker, time_of_day.tm_hour)
-                except AttributeError:
-                    continue
+                    # Create a dataframe of 1 hour bars
+                    df = build_dataframe(contract)
+
+                    # Append ticker to watchlist if it passes the strategy check
+                    try:
+                        if check_strategy_1(df, time_of_day.tm_hour):       
+                            watchlist.append(ticker)
+                        if check_strategy_2(df):
+                            watchlist.append(ticker, time_of_day.tm_hour)
+                    except AttributeError:
+                        continue
 
             print(f"{len(watchlist)} tickers have been added to the watchlist")
             print(watchlist)
@@ -232,7 +240,7 @@ def check_strategy_1(df, hour):
     """ Function checks if strategic criteria has been met """   
 
     # No trading after 3am
-    if hour == 3:
+    if hour == 2 or hour == 3:
         return False
 
     # Bar prior to inside bar must be green
@@ -431,28 +439,58 @@ def scanner(time_of_day):
     return symbols_higher_priced + symbols_lower_priced
 
 
-def cancel_all_open_orders():
-    """ This function cancels all open orders """
+def cancel_hourly_open_orders():
+    """ This function cancels all hourly open orders """
 
-    while len(ib.openOrders()) > 0:
-        for order in ib.openOrders():
+    for order in ib.openOrders():
+        if order.tif != "GTC":
             ib.cancelOrder(order)
-        ib.sleep(1)
-    print("All orders have been cancelled")
+            ib.sleep(1)
+
+    print("** All hourly orders have been cancelled **")
 
 
-def close_all_positions():
-    """ Close all positions in account """
+def close_all_hourly_positions(swing_trades):
+    """ Close all positions in account. Ticker list argument are tickers NOT to be closed """
 
-    # Market order out of all positions
+    # Market order out of all hourly positions
     positions = ib.positions()
     for position in positions:
-        contract = Stock(position.contract.symbol, "SMART", "USD")
-        ib.qualifyContracts(contract)
-        quantity = abs(position.position)
-        order = MarketOrder(action="SELL", totalQuantity=quantity)
-        ib.placeOrder(contract, order)
-        ib.sleep(1)
+        if position.contract.symbol not in swing_trades:
+            contract = Stock(position.contract.symbol, "SMART", "USD")
+            ib.qualifyContracts(contract)
+            quantity = abs(position.position)
+            order = MarketOrder(action="SELL", totalQuantity=quantity)
+            ib.placeOrder(contract, order)
+            ib.sleep(1)
+
+
+def adjust_hourly_stop_losses(swing_trades):                                                        #! Need to adjust this as to not close swing trade positions
+    """ Function will update all hourly stop losses """                                                
+
+    for trade in ib.openTrades():
+
+        if trade.contract.symbol not in swing_trades:
+
+            if trade.order.orderType == "STP":
+
+                # Create new contract based on the symbol
+                contract = Stock(trade.contract.symbol, "SMART", "USD")
+                ib.qualifyContracts(contract)
+
+                # Make sure the bars data is up to date
+                df = build_dataframe(contract)
+
+                # Replace previous stop order with new price
+                try:
+                    if df.low.iloc[-2] < 1:
+                        trade.order.auxPrice = round((df.low.iloc[-2] - 0.005), 3)
+                    else:
+                        trade.order.auxPrice = round((df.low.iloc[-2] - 0.01), 2)
+                    ib.placeOrder(contract, trade.order)
+                except AttributeError:
+                    print(f"Stop loss not updated for: {trade.contract.symbol}")
+                    continue
 
 
 def share_size(risk_per_share):
@@ -464,31 +502,6 @@ def share_size(risk_per_share):
     risk_percent = 0.01
     shares = round((account_size * risk_percent) / risk_per_share)
     return shares
-
-
-def adjust_all_stop_losses():
-    """ Function will update all stop losses """
-
-    for trade in ib.openTrades():
-        if trade.order.orderType == "STP":
-
-            # Create new contract based on the symbol
-            contract = Stock(trade.contract.symbol, "SMART", "USD")
-            ib.qualifyContracts(contract)
-
-            # Make sure the bars data is up to date
-            df = build_dataframe(contract)
-
-            # Replace previous stop order with new price
-            try:
-                if df.low.iloc[-2] < 1:
-                    trade.order.auxPrice = round((df.low.iloc[-2] - 0.005), 3)
-                else:
-                    trade.order.auxPrice = round((df.low.iloc[-2] - 0.01), 2)
-                ib.placeOrder(contract, trade.order)
-            except AttributeError:
-                print(f"Stop loss not updated for: {trade.contract.symbol}")
-                continue
 
 
 def open_trades_ticker_set():
