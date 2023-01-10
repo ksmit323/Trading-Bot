@@ -57,9 +57,13 @@ def main():
 
         # Add ticker to watchlist if strategy function returns True
         try:
+            if check_strategy(df):
+                watchlist.append(ticker)
+                continue
             if check_strategy_2(df):
                 watchlist.append(ticker)
-        except AttributeError:
+        except:
+            print(f"*** Error raised for {ticker} ***")
             continue
         
     print(len(watchlist))
