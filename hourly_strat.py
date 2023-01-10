@@ -32,7 +32,7 @@ from ib_insync import *
 
 # Instantiate IB class and establish connection
 ib = IB()
-ib.connect('127.0.0.1', 7497, 2)  #! Change port id when on live account to 7496
+ib.connect('127.0.0.1', 7497, 1)  #! Change port id when on live account to 7496
 if ib.isConnected():
     print("Connection established")
 else:
@@ -41,20 +41,10 @@ else:
 
 def main():
 
-    # TODO: Will need to consider altering strategy 2 to only include two red candles which both make lower lows, so neither should be an inside candle
-
-    #? Will consider the Kelly Criterion for position sizing and having a new risk profile.  Need some actual statistical data tho
-
-    #? How about a no trading ticker list for shitty tickers like TOPS
-
-    #? Have been considering only trading in the morning to avoid afternoon chop
-
-    #? Strategy change consideration: IMV, 12/15 and CNET, 12/08.  Three red bars, fourth is inside, fifth breaks out.  Rare but powerful
-
     # Build current swing trading ticker list to avoid interacting with throughout the day
     swing_trades = []
-    for position in ib.positions():
-        swing_trades.append(position.contract.symbol)
+    #for trade in ib.openTrades():
+    #    swing_trades.append(trade.contract.symbol)
 
     # Initialize hour variable to help track time of day
     hour = 21
@@ -74,27 +64,26 @@ def main():
                 if trade.contract.symbol not in swing_trades:
                     if trade.order.action == "BUY":
                         ib.cancelOrder(trade.order)
+                        ib.sleep(0.5)
                         print("Unfilled order cancelled")
 
             # Update stop losses 
-            if len(ib.positions()) > 0:
-                ib.sleep(10)
-                adjust_hourly_stop_losses(swing_trades)
-                print("*** Stop orders have been updated ***")
+            adjust_hourly_stop_losses(swing_trades)
+            print("*** Stop orders have been updated ***")
 
         # Close all positions at the end of the day           
         # * NOTE: this will not work when the market closes early
         if time_of_day.tm_hour == 3 and time_of_day.tm_min >= 55:      
-            while True:
+            for _ in range(5):                                                          #! Need a more robust way of handling EOD closing positions
                 cancel_hourly_open_orders()
                 print("*** Now closing all positions ***")
                 close_all_hourly_positions(swing_trades)
-                ib.sleep(20)
-                if len(ib.positions()) - len(swing_trades) == 0:
-                    print("All positions have been closed")
-                    print(f"Today's total commissions: ${commissions_paid()}")
-                    ib.disconnect()
-                    sys.exit("You have been disconnected")
+                ib.sleep(30)
+
+            print("All positions have been closed")
+            print(f"Today's total commissions: ${commissions_paid()}")
+            ib.disconnect()
+            sys.exit("You have been disconnected")
 
         # Loop thru each ticker in the scanner results and add to watchlist
         # * This loop should only run once per hour hence the updated hour variable at the end
@@ -126,8 +115,8 @@ def main():
                     try:
                         if check_strategy_1(df, time_of_day.tm_hour):       
                             watchlist.append(ticker)
-                        if check_strategy_2(df):
-                            watchlist.append(ticker, time_of_day.tm_hour)
+                        if check_strategy_2(df, time_of_day.tm_hour):
+                            watchlist.append(ticker)
                     except AttributeError:
                         continue
 
@@ -198,7 +187,7 @@ def main():
                                     limit_price, take_profit_level, take_profit_increment, stop_loss)                     
 
                         # Confirm order placement with print statement
-                        print(f"An order has been placed for {ticker}. See TWS for details")
+                        print(f"** An order has been placed for {ticker}. See TWS for details **")
 
                 else:
                     # Remove ticker from watchlist if it already has an order
@@ -240,7 +229,7 @@ def check_strategy_1(df, hour):
     """ Function checks if strategic criteria has been met """   
 
     # No trading after 3am
-    if hour == 2 or hour == 3:
+    if hour == 3:
         return False
 
     # Bar prior to inside bar must be green
@@ -411,7 +400,7 @@ def scanner(time_of_day):
     tag_values_4 = [                                 
         TagValue("changePercAbove", "4"),
         TagValue("priceBelow", 1),
-        TagValue("priceAbove", 0.2),
+        TagValue("priceAbove", 0.5),
         TagValue("volumeAbove", volume_under_one_dollar),
         TagValue("priceRangeAbove", "0.05"),
         TagValue("volumeRateAbove", 0),
@@ -465,7 +454,7 @@ def close_all_hourly_positions(swing_trades):
             ib.sleep(1)
 
 
-def adjust_hourly_stop_losses(swing_trades):                                                        #! Need to adjust this as to not close swing trade positions
+def adjust_hourly_stop_losses(swing_trades):                                               
     """ Function will update all hourly stop losses """                                                
 
     for trade in ib.openTrades():
@@ -489,8 +478,9 @@ def adjust_hourly_stop_losses(swing_trades):                                    
                         trade.order.auxPrice = round((df.low.iloc[-2] - 0.01), 2)
                     ib.placeOrder(contract, trade.order)
                 except AttributeError:
-                    print(f"Stop loss not updated for: {trade.contract.symbol}")
+                    print(f"*** WARNING: Stop loss not updated for: {trade.contract.symbol} ***")
                     continue
+                ib.sleep(0.5)
 
 
 def share_size(risk_per_share):
